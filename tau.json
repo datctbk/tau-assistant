@@ -1,0 +1,8 @@
+{
+  "name": "tau-assistant",
+  "version": "0.1.0",
+  "description": "Personal assistant layer for tau with planning, workflows, routines, and connector orchestration.",
+  "author": "datctbk",
+  "extensions": ["extensions/assistant"],
+  "skills": []
+}

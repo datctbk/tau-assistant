@@ -48,6 +48,8 @@ def test_tools_exist():
         "assistant_plan_validate",
         "assistant_workflow_run",
         "assistant_meeting_prep",
+        "assistant_session_search",
+        "assistant_session_recall",
         "assistant_web_rank",
         "assistant_workflow_status",
         "assistant_workflow_list",
@@ -382,3 +384,58 @@ def test_web_rank_normalizes_and_prioritizes_trusted_sources(tmp_path):
     assert result["results"][0]["domain"] == "packaging.python.org"
     assert result["results"][0]["url"] == "https://packaging.python.org/en/latest/"
     assert result["results"][0]["trust_tier"] == "high"
+
+
+def test_session_search_and_recall(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    sessions_dir = tmp_path / ".tau" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    (sessions_dir / "sess-alpha-123.json").write_text(
+        json.dumps(
+            {
+                "id": "sess-alpha-123",
+                "name": "Release planning",
+                "updated_at": "2026-04-18T08:00:00+00:00",
+                "config": {"provider": "openai", "model": "gpt-4o"},
+                "messages": [
+                    {"role": "user", "content": "How should we do python packaging release notes?"},
+                    {"role": "assistant", "content": "Use packaging.python.org guidance first."},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sessions_dir / "sess-beta-456.json").write_text(
+        json.dumps(
+            {
+                "id": "sess-beta-456",
+                "name": "Random chat",
+                "updated_at": "2026-04-18T07:00:00+00:00",
+                "config": {"provider": "openai", "model": "gpt-4o-mini"},
+                "messages": [
+                    {"role": "user", "content": "Weekend trip ideas"},
+                    {"role": "assistant", "content": "Maybe beach and food tour."},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    searched = json.loads(ext._handle_session_search(query="python packaging", limit=5))
+    assert searched["ok"] is True
+    assert searched["count"] >= 1
+    assert searched["sessions"][0]["session_id"] == "sess-alpha-123"
+
+    recalled = json.loads(
+        ext._handle_session_recall(
+            session_id="sess-alpha",
+            query="packaging",
+            max_points=4,
+        )
+    )
+    assert recalled["ok"] is True
+    assert recalled["session"]["session_id"] == "sess-alpha-123"
+    assert "Focus: packaging" in recalled["session"]["summary_text"]

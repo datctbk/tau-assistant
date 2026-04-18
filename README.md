@@ -34,6 +34,8 @@ After loading the extension, these tools are available:
 - `assistant_plan_validate`
 - `assistant_workflow_run`
 - `assistant_meeting_prep`
+- `assistant_session_search`
+- `assistant_session_recall`
 - `assistant_web_rank`
 - `assistant_workflow_status`
 - `assistant_workflow_list`

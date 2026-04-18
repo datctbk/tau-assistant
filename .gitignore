@@ -47,3 +47,4 @@ tests/__pycache__/test_eval_harness.cpython-314-pytest-9.0.3.pyc
 tests/__pycache__/test_skill_manager.cpython-39-pytest-8.4.2.pyc
 tests/__pycache__/test_web_source_ranker.cpython-314-pytest-9.0.3.pyc
 __pycache__/workflow_policy.cpython-314.pyc
+__pycache__/session_recall.cpython-314.pyc

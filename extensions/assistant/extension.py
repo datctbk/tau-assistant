@@ -33,6 +33,7 @@ from insights_engine import AssistantInsightsEngine
 from memory_manager import MemoryManager
 from planner import PlanStep, WorkflowPlan
 from profile import UserProfile
+from session_recall import SessionRecallEngine
 from skill_manager import SkillManager
 from web_source_ranker import normalize_and_rank_sources
 from workflow_executor import WorkflowExecutor
@@ -237,6 +238,43 @@ class AssistantExtension(Extension):
                     ),
                 },
                 handler=self._handle_meeting_prep,
+            ),
+            ToolDefinition(
+                name="assistant_session_search",
+                description="Search saved tau sessions by semantic keyword overlap and return ranked candidates.",
+                parameters={
+                    "query": ToolParameter(
+                        type="string",
+                        description="Query text to match against session message history.",
+                    ),
+                    "limit": ToolParameter(
+                        type="integer",
+                        description="Optional number of sessions to return (default 5).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_session_search,
+            ),
+            ToolDefinition(
+                name="assistant_session_recall",
+                description="Recall and summarize a specific session (ID or prefix), optionally focused by query.",
+                parameters={
+                    "session_id": ToolParameter(
+                        type="string",
+                        description="Session id or unique prefix from .tau/sessions.",
+                    ),
+                    "query": ToolParameter(
+                        type="string",
+                        description="Optional focus query for targeted recall.",
+                        required=False,
+                    ),
+                    "max_points": ToolParameter(
+                        type="integer",
+                        description="Optional max bullets in summary (default 6).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_session_recall,
             ),
             ToolDefinition(
                 name="assistant_web_rank",
@@ -453,6 +491,8 @@ class AssistantExtension(Extension):
             "- assistant_plan_validate\n"
             "- assistant_workflow_run\n"
             "- assistant_meeting_prep\n"
+            "- assistant_session_search\n"
+            "- assistant_session_recall\n"
             "- assistant_web_rank\n"
             "- assistant_workflow_status\n"
             "- assistant_workflow_list\n"
@@ -724,6 +764,28 @@ class AssistantExtension(Extension):
         runner = WorkflowRunner(self._workspace_root)
         rows = runner.list_states(limit=limit)
         return _json_dumps({"ok": True, "count": len(rows), "workflows": rows})
+
+    def _handle_session_search(self, query: str, limit: int = 5) -> str:
+        engine = SessionRecallEngine(self._workspace_root)
+        rows = engine.search(query=query, limit=limit)
+        return _json_dumps(
+            {
+                "ok": True,
+                "query": query,
+                "count": len(rows),
+                "sessions": rows,
+            }
+        )
+
+    def _handle_session_recall(self, session_id: str, query: str = "", max_points: int = 6) -> str:
+        engine = SessionRecallEngine(self._workspace_root)
+        recalled = engine.recall(session_id=session_id, query=query, max_points=max_points)
+        return _json_dumps(
+            {
+                "ok": True,
+                "session": recalled,
+            }
+        )
 
     def _handle_web_rank(self, query: str, results_json: str, max_results: int = 10) -> str:
         rows = _parse_json_array(results_json, field="results_json")

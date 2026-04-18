@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from profile import UserProfile
 from planner import PlanStep, WorkflowPlan
@@ -105,3 +106,30 @@ def test_routine_scheduler_executes_due_callback():
         eng.stop_scheduler()
 
     assert "r1" in hits
+
+
+def test_routine_persistence_roundtrip(tmp_path):
+    eng = RoutineEngine(
+        routines=[
+            Routine(id="r1", title="daily brief", interval_minutes=60, enabled=True, last_run=None),
+            Routine(id="r2", title="weekly sync", interval_minutes=10080, enabled=False, last_run="2026-04-10T00:00:00+00:00"),
+        ]
+    )
+    target = tmp_path / "assistant-routines.json"
+    eng.save(str(target))
+    assert target.exists()
+
+    loaded = RoutineEngine.load(str(target))
+    assert len(loaded.routines) == 2
+    assert loaded.routines[0].id == "r1"
+    assert loaded.routines[1].enabled is False
+
+
+def test_routine_workspace_persistence(tmp_path):
+    eng = RoutineEngine(routines=[Routine(id="r1", title="standup prep", interval_minutes=720)])
+    path = eng.save_workspace(str(tmp_path))
+    assert Path(path).exists()
+
+    loaded = RoutineEngine.load_workspace(str(tmp_path))
+    assert len(loaded.routines) == 1
+    assert loaded.routines[0].title == "standup prep"

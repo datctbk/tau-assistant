@@ -26,10 +26,20 @@ if str(_PKG_ROOT) not in sys.path:
 
 from connector_router import ConnectorRouter
 from connectors import CalendarConnector, ChatConnector, EmailConnector, NoteConnector
+from checkpoint_manager import CheckpointManager
+from context_compressor import WorkflowContextCompressor
 from cross_connector_routines import run_meeting_prep_routine
+from insights_engine import AssistantInsightsEngine
+from memory_manager import MemoryManager
 from planner import PlanStep, WorkflowPlan
 from profile import UserProfile
-from workflow_runner import WorkflowRunner
+from skill_manager import SkillManager
+from workflow_runner import (
+    WorkflowRunner,
+    append_assistant_event,
+    append_audit_record,
+    make_assistant_event,
+)
 
 
 def _json_dumps(data: Any) -> str:
@@ -67,12 +77,21 @@ class AssistantExtension(Extension):
     def __init__(self) -> None:
         self._ext_context: ExtensionContext | None = None
         self._workspace_root = "."
+        self._memory = MemoryManager(self._workspace_root)
+        self._skills = SkillManager(self._workspace_root)
+        self._checkpoints = CheckpointManager(self._workspace_root)
+        self._insights = AssistantInsightsEngine(self._workspace_root)
+        self._context_engine = WorkflowContextCompressor()
 
     def on_load(self, context: ExtensionContext) -> None:
         self._ext_context = context
         agent_cfg = getattr(context, "_agent_config", None)
         if agent_cfg and getattr(agent_cfg, "workspace_root", None):
             self._workspace_root = str(agent_cfg.workspace_root)
+        self._memory.set_workspace_root(self._workspace_root)
+        self._skills = SkillManager(self._workspace_root)
+        self._checkpoints = CheckpointManager(self._workspace_root)
+        self._insights = AssistantInsightsEngine(self._workspace_root)
 
     def tools(self) -> list[ToolDefinition]:
         return [
@@ -158,6 +177,16 @@ class AssistantExtension(Extension):
                         enum=["dry_run", "enqueue_prompts"],
                         required=False,
                     ),
+                    "promote_to_skill": ToolParameter(
+                        type="boolean",
+                        description="When true, promote workflow handoff into a reusable assistant skill.",
+                        required=False,
+                    ),
+                    "skill_name": ToolParameter(
+                        type="string",
+                        description="Optional skill name for promotion. Defaults to objective-derived name.",
+                        required=False,
+                    ),
                 },
                 handler=self._handle_workflow_run,
             ),
@@ -189,6 +218,137 @@ class AssistantExtension(Extension):
                     ),
                 },
                 handler=self._handle_meeting_prep,
+            ),
+            ToolDefinition(
+                name="assistant_memory_add",
+                description="Add a memory entry to the assistant's persistent memory store.",
+                parameters={
+                    "content": ToolParameter(
+                        type="string",
+                        description="Memory content to store.",
+                    ),
+                    "kind": ToolParameter(
+                        type="string",
+                        description="Optional memory type, e.g. fact, preference, workflow.",
+                        required=False,
+                    ),
+                    "source": ToolParameter(
+                        type="string",
+                        description="Optional source label for traceability.",
+                        required=False,
+                    ),
+                    "confidence": ToolParameter(
+                        type="number",
+                        description="Optional confidence score between 0 and 1.",
+                        required=False,
+                    ),
+                    "tags_json": ToolParameter(
+                        type="string",
+                        description='Optional JSON array of tags, e.g. ["release","deploy"].',
+                        required=False,
+                    ),
+                    "metadata_json": ToolParameter(
+                        type="string",
+                        description='Optional JSON object with extra metadata.',
+                        required=False,
+                    ),
+                },
+                handler=self._handle_memory_add,
+            ),
+            ToolDefinition(
+                name="assistant_memory_search",
+                description="Search assistant memory entries by semantic keyword overlap.",
+                parameters={
+                    "query": ToolParameter(
+                        type="string",
+                        description="Search query text.",
+                    ),
+                    "limit": ToolParameter(
+                        type="integer",
+                        description="Optional number of results (default 5).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_memory_search,
+            ),
+            ToolDefinition(
+                name="assistant_skill_manage",
+                description="Create, read, list, delete, or promote assistant skills.",
+                parameters={
+                    "action": ToolParameter(
+                        type="string",
+                        description="One of: create, read, list, delete, promote.",
+                        enum=["create", "read", "list", "delete", "promote"],
+                    ),
+                    "name": ToolParameter(
+                        type="string",
+                        description="Skill name (required for all actions except list).",
+                        required=False,
+                    ),
+                    "description": ToolParameter(
+                        type="string",
+                        description="Description for create action.",
+                        required=False,
+                    ),
+                    "instructions": ToolParameter(
+                        type="string",
+                        description="Instructions body for create action.",
+                        required=False,
+                    ),
+                    "tags_json": ToolParameter(
+                        type="string",
+                        description='Optional JSON array of tags, e.g. ["release","workflow"].',
+                        required=False,
+                    ),
+                    "objective": ToolParameter(
+                        type="string",
+                        description="Objective text for promote action.",
+                        required=False,
+                    ),
+                    "workflow_id": ToolParameter(
+                        type="string",
+                        description="Workflow id for promote action.",
+                        required=False,
+                    ),
+                    "handoff_json": ToolParameter(
+                        type="string",
+                        description="Workflow handoff as JSON object for promote action.",
+                        required=False,
+                    ),
+                    "outcomes_json": ToolParameter(
+                        type="string",
+                        description="Workflow outcomes as JSON array for promote action.",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_skill_manage,
+            ),
+            ToolDefinition(
+                name="assistant_checkpoint_create",
+                description="Create a named checkpoint with summary and optional metadata.",
+                parameters={
+                    "name": ToolParameter(
+                        type="string",
+                        description="Checkpoint name.",
+                    ),
+                    "summary": ToolParameter(
+                        type="string",
+                        description="Optional summary text for quick resume context.",
+                        required=False,
+                    ),
+                    "metadata_json": ToolParameter(
+                        type="string",
+                        description="Optional JSON object for extra checkpoint metadata.",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_checkpoint_create,
+            ),
+            ToolDefinition(
+                name="assistant_insights",
+                description="Generate assistant insights across checkpoints, skills, memory, routines, and audit logs.",
+                parameters={},
+                handler=self._handle_insights,
             ),
         ]
 
@@ -226,6 +386,11 @@ class AssistantExtension(Extension):
             "- assistant_plan_validate\n"
             "- assistant_workflow_run\n"
             "- assistant_meeting_prep\n"
+            "- assistant_memory_add\n"
+            "- assistant_memory_search\n"
+            "- assistant_skill_manage\n"
+            "- assistant_checkpoint_create\n"
+            "- assistant_insights\n"
         )
 
     def _build_plan(self, objective: str, steps_json: str, workflow_id: str | None = None) -> WorkflowPlan:
@@ -308,6 +473,8 @@ class AssistantExtension(Extension):
         steps_json: str,
         workflow_id: str | None = None,
         execution_mode: str = "dry_run",
+        promote_to_skill: bool = False,
+        skill_name: str = "",
     ) -> str:
         mode = (execution_mode or "dry_run").strip()
         if mode not in {"dry_run", "enqueue_prompts"}:
@@ -315,28 +482,215 @@ class AssistantExtension(Extension):
 
         plan = self._build_plan(objective=objective, steps_json=steps_json, workflow_id=workflow_id)
         runner = WorkflowRunner(self._workspace_root)
+        memory_context = self._memory.prefetch_context(query=objective, limit=3)
+        memory_snapshot = self._context_engine.memory_snapshot(self._workspace_root)
+        execution_brief = self._context_engine.build_execution_brief(
+            objective=objective,
+            plan=plan,
+            memory_context=memory_context,
+            memory_snapshot=memory_snapshot,
+        )
 
         def _execute_step(step_id: str) -> str:
             if mode == "enqueue_prompts" and self._ext_context is not None:
                 self._ext_context.enqueue(
                     (
                         f"[assistant workflow {plan.id}] Execute step {step_id} for objective "
-                        f"'{plan.objective}'."
+                        f"'{plan.objective}'.\n\n{execution_brief}"
                     )
                 )
                 return f"enqueued prompt for step {step_id}"
             return f"dry run completed step {step_id}"
 
         outcomes = runner.run(plan, execute_step=_execute_step)
+        handoff = self._context_engine.build_workflow_handoff(
+            objective=objective,
+            plan=plan,
+            outcomes=outcomes,
+            memory_context=memory_context,
+            memory_snapshot=memory_snapshot,
+        )
+        handoff_checkpoint = runner.write_handoff_checkpoint(plan.id, handoff["summary_text"])
+        handoff_memory = self._memory.add_memory(
+            content=handoff["summary_text"],
+            kind="project",
+            source="assistant_workflow_handoff",
+            confidence=0.85,
+            tags=["workflow", "handoff"],
+            metadata={
+                "workflow_id": plan.id,
+                "type": "handoff_summary",
+                "remaining_steps": handoff["remaining_steps"],
+            },
+        )
+        promotion: dict[str, Any] | None = None
+        if bool(promote_to_skill):
+            resolved_skill_name = skill_name.strip() or f"{objective.strip()} workflow"
+            promotion = self._skills.promote_from_workflow(
+                skill_name=resolved_skill_name,
+                objective=objective,
+                workflow_id=plan.id,
+                handoff=handoff,
+                outcomes=outcomes,
+            )
+            self._memory.add_memory(
+                content=(
+                    f"Promoted workflow '{plan.objective}' to skill '{resolved_skill_name}' "
+                    f"from workflow_id={plan.id}."
+                ),
+                kind="reference",
+                source="assistant_skill_manage",
+                confidence=0.88,
+                tags=["skill", "promotion"],
+                metadata={
+                    "workflow_id": plan.id,
+                    "skill_name": resolved_skill_name,
+                    "skill_path": promotion.get("path", ""),
+                },
+            )
+        memory_write = self._memory.on_workflow_complete(
+            workflow_id=plan.id,
+            objective=plan.objective,
+            outcomes=outcomes,
+        )
         return _json_dumps(
             {
                 "ok": True,
                 "workflow_id": plan.id,
                 "objective": plan.objective,
                 "execution_mode": mode,
+                "memory_context": memory_context,
+                "memory_snapshot": memory_snapshot,
+                "execution_brief": execution_brief,
+                "memory_write": memory_write,
+                "handoff_memory_write": handoff_memory,
+                "handoff": handoff,
+                "handoff_checkpoint": str(handoff_checkpoint),
+                "skill_promotion": promotion,
                 "outcomes": outcomes,
             }
         )
+
+    def _handle_memory_add(
+        self,
+        content: str,
+        kind: str = "fact",
+        source: str = "",
+        confidence: float = 0.8,
+        tags_json: str | None = None,
+        metadata_json: str | None = None,
+    ) -> str:
+        tags: list[str] = []
+        metadata: dict[str, Any] = {}
+        if tags_json is not None:
+            parsed_tags = _parse_json_array(tags_json, field="tags_json")
+            tags = [str(x) for x in parsed_tags]
+        if metadata_json is not None:
+            metadata = _parse_json_object(metadata_json, field="metadata_json")
+        written = self._memory.add_memory(
+            content=content,
+            kind=kind,
+            source=source,
+            confidence=confidence,
+            tags=tags,
+            metadata=metadata,
+        )
+        return _json_dumps({"ok": True, "memory": written})
+
+    def _handle_memory_search(self, query: str, limit: int = 5) -> str:
+        rows = self._memory.search_memories(query=query, limit=limit)
+        return _json_dumps({"ok": True, "query": query, "count": len(rows), "results": rows})
+
+    def _handle_skill_manage(
+        self,
+        action: str,
+        name: str | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
+        tags_json: str | None = None,
+        objective: str | None = None,
+        workflow_id: str | None = None,
+        handoff_json: str | None = None,
+        outcomes_json: str | None = None,
+    ) -> str:
+        act = (action or "").strip().lower()
+        if act == "list":
+            rows = self._skills.list()
+            return _json_dumps({"ok": True, "action": "list", "count": len(rows), "skills": rows})
+
+        skill_name = (name or "").strip()
+        if not skill_name:
+            return "Error: name is required for action create/read/delete/promote."
+
+        if act == "create":
+            if not (description or "").strip():
+                return "Error: description is required for action=create."
+            if not (instructions or "").strip():
+                return "Error: instructions is required for action=create."
+            tags: list[str] = []
+            if tags_json:
+                tags = [str(x) for x in _parse_json_array(tags_json, field="tags_json")]
+            created = self._skills.create_or_update(
+                name=skill_name,
+                description=str(description),
+                instructions=str(instructions),
+                tags=tags,
+                source="manual",
+            )
+            return _json_dumps({"ok": True, "action": "create", "skill": created})
+
+        if act == "read":
+            skill = self._skills.read(name=skill_name)
+            return _json_dumps({"ok": True, "action": "read", "skill": skill})
+
+        if act == "delete":
+            removed = self._skills.delete(name=skill_name)
+            return _json_dumps({"ok": True, "action": "delete", "result": removed})
+
+        if act == "promote":
+            if not (objective or "").strip():
+                return "Error: objective is required for action=promote."
+            if not (workflow_id or "").strip():
+                return "Error: workflow_id is required for action=promote."
+            handoff = _parse_json_object(handoff_json or "{}", field="handoff_json")
+            outcomes = _parse_json_array(outcomes_json or "[]", field="outcomes_json")
+            promoted = self._skills.promote_from_workflow(
+                skill_name=skill_name,
+                objective=str(objective),
+                workflow_id=str(workflow_id),
+                handoff=handoff,
+                outcomes=[x for x in outcomes if isinstance(x, dict)],
+            )
+            return _json_dumps({"ok": True, "action": "promote", "skill": promoted})
+
+        return "Error: action must be one of create, read, list, delete, promote."
+
+    def _handle_checkpoint_create(
+        self,
+        name: str,
+        summary: str = "",
+        metadata_json: str | None = None,
+    ) -> str:
+        metadata = _parse_json_object(metadata_json, field="metadata_json") if metadata_json else {}
+        path = self._checkpoints.create_named_checkpoint(name=name, summary=summary, metadata=metadata)
+        append_audit_record(
+            self._workspace_root,
+            "assistant.checkpoint_created",
+            {"name": name, "checkpoint": path},
+        )
+        append_assistant_event(
+            self._workspace_root,
+            make_assistant_event(
+                family="checkpoint",
+                name="named_checkpoint_created",
+                payload={"name": name, "checkpoint": path},
+            ),
+        )
+        return _json_dumps({"ok": True, "name": name, "checkpoint": path, "metadata": metadata})
+
+    def _handle_insights(self) -> str:
+        report = self._insights.generate()
+        return _json_dumps({"ok": True, "insights": report})
 
     def _handle_meeting_prep(
         self,

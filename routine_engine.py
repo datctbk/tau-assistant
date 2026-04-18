@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import threading
 from typing import Callable
 
@@ -72,3 +74,49 @@ class RoutineEngine:
         self._scheduler_stop.set()
         if self._scheduler_thread is not None:
             self._scheduler_thread.join(timeout=timeout)
+
+    def save(self, path: str) -> str:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "routines": [asdict(r) for r in self.routines],
+        }
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(target)
+
+    @classmethod
+    def load(cls, path: str) -> "RoutineEngine":
+        target = Path(path)
+        if not target.exists():
+            return cls(routines=[])
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        items = raw.get("routines", [])
+        rows: list[Routine] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                rows.append(
+                    Routine(
+                        id=str(item.get("id", "")),
+                        title=str(item.get("title", "")),
+                        interval_minutes=int(item.get("interval_minutes", 60)),
+                        enabled=bool(item.get("enabled", True)),
+                        last_run=str(item.get("last_run")) if item.get("last_run") else None,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                continue
+        return cls(routines=rows)
+
+    @staticmethod
+    def workspace_path(workspace_root: str) -> Path:
+        return Path(workspace_root) / ".tau" / "assistant" / "routines.json"
+
+    def save_workspace(self, workspace_root: str) -> str:
+        return self.save(str(self.workspace_path(workspace_root)))
+
+    @classmethod
+    def load_workspace(cls, workspace_root: str) -> "RoutineEngine":
+        return cls.load(str(cls.workspace_path(workspace_root)))

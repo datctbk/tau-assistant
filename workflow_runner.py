@@ -68,6 +68,27 @@ class WorkflowRunner:
         fp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return fp
 
+    def write_handoff_checkpoint(self, workflow_id: str, handoff_summary: str) -> Path:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        fp = self._checkpoint_dir() / f"{ts}_{workflow_id}_handoff.md"
+        fp.write_text(handoff_summary.strip() + "\n", encoding="utf-8")
+
+        append_audit_record(
+            self.workspace_root,
+            "workflow.handoff_saved",
+            {"workflow_id": workflow_id, "checkpoint": str(fp)},
+        )
+        append_assistant_event(
+            self.workspace_root,
+            make_assistant_event(
+                family="workflow",
+                name="handoff_saved",
+                payload={"workflow_id": workflow_id, "checkpoint": str(fp)},
+                session_id=self.session_id,
+            ),
+        )
+        return fp
+
     def run(self, plan: WorkflowPlan, execute_step: Callable[[str], str]) -> list[dict[str, str]]:
         order = plan.topo_order()
         outcomes: list[dict[str, str]] = []

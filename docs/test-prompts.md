@@ -1,129 +1,203 @@
 # tau-assistant Test Prompts
 
-Use these prompts to validate current tau-assistant capabilities from Phase A through Phase D.
+Use these prompts to validate current tau-assistant capabilities (workflow execution, recovery, skills, routines, web ranking, session recall, subagents, and dialectic profile).
 
 ## How To Use
 
-- Run prompts in order for a full smoke pass.
-- For each prompt, verify the expected result.
-- Record pass or fail and short notes.
+- Run prompts in order for a full acceptance pass.
+- For each prompt, record pass/fail and 1-2 notes.
+- Prefer a clean test workspace (`.tau` folder) for deterministic checks.
 
 ## Core Prompt Checklist
 
-1. Planner and dependency ordering
+1. Profile roundtrip
 Prompt:
-Create a 7-step plan to ship a small feature with dependencies between design, implementation, tests, and release notes. Show step IDs and dependency graph.
+Set profile name/goals/preferences/boundaries, then read the profile back.
 Expected:
-- Steps are dependency-valid.
-- No cycle errors.
+- Saved values are returned exactly.
 
-2. Workflow runner and checkpoints
+2. Dialectic profile default
 Prompt:
-Execute this plan step by step and save a checkpoint after each completed step.
+Read the dialectic profile and list all dimension keys.
 Expected:
-- Step completion events are emitted.
-- Checkpoints are saved per completed step.
+- Includes speed_vs_quality, autonomy_vs_control, brevity_vs_depth, innovation_vs_stability, risk_acceptance_vs_safety.
 
-3. Manual checkpoint command
+3. Dialectic manual update
 Prompt:
-/checkpoint sprint-auth-refactor
+Update `speed_vs_quality` to quality-leaning with high confidence and provide evidence lines.
 Expected:
-- Named checkpoint saved with session metadata.
-- Audit/event record exists.
+- Score/confidence are updated.
+- Evidence is persisted.
 
-4. Policy low-risk allow
+4. Dialectic inference
 Prompt:
-Read project files and summarize architecture only. Do not modify anything.
+Infer dialectic profile from evidence text emphasizing concise and safe execution.
 Expected:
-- No approval required for read-only path.
+- Profile updates successfully.
+- Brevity and safety dimensions move in expected direction.
 
-5. Policy medium or high approval
+5. Planner and dependency ordering
 Prompt:
-Apply code changes to multiple files and run commands that modify state.
+Validate a 6-step plan with dependencies across design, implement, test, and release.
 Expected:
-- Approval request appears before execution.
-- Deny blocks execution.
-- Approve allows execution.
+- Topological order is valid.
+- No cycle/dependency errors.
 
-6. Routine due detection
+6. Workflow run in dry mode
 Prompt:
-Create two routines: daily brief every 1440 minutes and standup prep every 720 minutes. Tell me which ones are due now.
+Run a workflow in `dry_run` mode with two dependent steps.
 Expected:
-- Due list aligns with interval and last-run state.
+- Steps complete with checkpoints/outcomes.
+- Handoff summary is generated.
 
-7. Scheduler callback firing
+7. Workflow run in execute mode
 Prompt:
-Start scheduler polling every 1 second for due routines and record which routine IDs fire within 10 seconds.
+Run a workflow in `execute` mode with `connector_action` posting to chat.
 Expected:
-- Due callback fires.
-- Routine last-run state updates.
+- Run status is `completed`.
+- Connector action succeeds.
 
-8. Connector router basic routing
+8. Policy approval block
 Prompt:
-Register calendar, note, chat, and email connectors. Route one action to each and show responses.
+Run execute mode under `balanced` policy with a medium-risk action and no risky approval.
 Expected:
-- Each known connector returns success.
-- Unknown connector returns clean error.
+- Run stops on failure.
+- Error indicates approval required.
 
-9. Cross-connector meeting prep
+9. Recovery and resume
 Prompt:
-Run meeting prep for upcoming events: create prep notes, post chat update, and send digest email.
+Run a workflow where step 2 fails, then rerun with `resume=true` and corrected step 2.
 Expected:
-- Notes are created.
-- Chat update is posted.
-- Digest email is sent when recipient is configured.
+- First run stops on failure.
+- Resumed run completes without duplicating step 1 completion.
 
-10. Digest validation guard
+10. Workflow state inspection
 Prompt:
-Run meeting prep with email digest enabled but no recipient.
+Get status for a completed workflow and list workflow states.
 Expected:
-- Clear validation error for missing recipient.
+- Status reports completion and latest step outcomes.
+- Workflow appears in state listing.
 
-11. Memory confidence and conflict metadata
+11. Session search
 Prompt:
-Save memory about deployment preference with confidence 0.92, then save another memory with same title but updated preference.
+Search sessions for “python packaging release” and return top matches.
 Expected:
-- Confidence metadata is present.
-- Conflict or supersede marker appears.
+- Relevant session ranks first or near top.
+- Snippets and scores are present.
 
-12. Memory retrieval ranking quality
+12. Session recall summary
 Prompt:
-Retrieve top 5 memories relevant to release process and explain why each ranked high.
+Recall a session by id prefix with focus query “packaging”.
 Expected:
-- Ranking rationale reflects overlap, recency, and scope.
+- Summary contains focus line and key points.
 
-13. Web trust normalization
+13. Memory add/search
 Prompt:
-Search the web for Python packaging best practices and rank results by source trust, normalizing URLs.
+Add a memory with confidence and tags; search with related query.
 Expected:
-- URLs normalized.
-- Trust tier or trust score visible.
+- Added entry returns metadata.
+- Search returns the new entry.
 
-14. Audit trail completeness
+14. Workflow handoff memory integration
 Prompt:
-Run one policy-approved action, one denied action, one checkpoint, and one workflow step. Then show audit summary.
+Run a workflow and verify handoff is also written to memory.
 Expected:
-- All four action classes appear in append-only audit output.
+- `handoff_memory_write` exists with source `assistant_workflow_handoff`.
 
-15. Failure resilience smoke test
+15. Skill management CRUD
 Prompt:
-Run a routine callback that fails once and succeeds on retry path; continue scheduler without crashing.
+Create, read, list, and delete a skill.
 Expected:
-- Scheduler survives callback error and continues.
+- All actions succeed and path/content are correct.
+
+16. Manual workflow-to-skill promotion
+Prompt:
+Run workflow with `promote_to_skill=true`.
+Expected:
+- Skill promotion object is returned.
+- Skill file exists.
+
+17. Auto skill learning create
+Prompt:
+Run workflow with `auto_learn_skill=true` and enough completed steps where target skill does not exist.
+Expected:
+- Auto-learning triggers in `created` mode.
+
+18. Auto skill learning improve
+Prompt:
+Run a second similar workflow with same skill name and auto-learn enabled.
+Expected:
+- Auto-learning triggers in `improved` mode.
+- Skill contains `## Continuous Improvements`.
+
+19. Auto skill learning skip guard
+Prompt:
+Run auto-learn with only one completed step and min threshold 2.
+Expected:
+- Auto-learning is skipped with `not_enough_completed_steps`.
+
+20. Web trust normalization and ranking
+Prompt:
+Rank supplied web results for “python packaging best practices”.
+Expected:
+- URLs are normalized (tracking params removed).
+- Trust fields and ranking reasons are present.
+
+21. Meeting prep cross-connector routine
+Prompt:
+Run meeting prep with one event, chat channel, and email digest recipient.
+Expected:
+- Prep note created.
+- Chat message sent.
+- Email digest sent.
+
+22. Routine manage and due delivery
+Prompt:
+Create chat-delivery routine, run due routines, then list routines.
+Expected:
+- Delivery succeeds.
+- `last_run` is updated.
+
+23. Routine delivery failure handling
+Prompt:
+Create email-delivery routine without recipient and run due routines.
+Expected:
+- Failure recorded.
+- Routine `last_run` remains unset.
+
+24. Subagent single delegation
+Prompt:
+Run one delegated subagent task (e.g., persona `explore`) and return result.
+Expected:
+- Subagent returns text output successfully.
+
+25. Subagent parallel workstreams
+Prompt:
+Run two delegated tasks in parallel and aggregate results.
+Expected:
+- Both tasks complete.
+- Completed/failed counters are accurate.
+
+26. Checkpoint + insights report
+Prompt:
+Create named checkpoint, then generate insights.
+Expected:
+- Checkpoint file exists.
+- Insights summary counts are non-zero where expected.
 
 ## Fast Smoke Run Order
 
-1. Planner plus workflow runner.
-2. Policy approval and denial.
-3. Scheduler fire path.
-4. Connector meeting prep path.
-5. Memory conflict and retrieval.
-6. Web trust normalization.
-7. Audit summary verification.
+1. Planner + execute workflow + resume recovery.
+2. Memory + handoff + skill promotion.
+3. Auto-skill learning (create then improve).
+4. Web ranking + session search/recall.
+5. Routine manage + due delivery + failure guard.
+6. Subagent single + parallel.
+7. Checkpoint + insights.
 
 ## Optional Scoring Template
 
-- Total prompts: 15
+- Total prompts: 26
 - Passed:
 - Failed:
 - Blocked:

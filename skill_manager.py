@@ -29,6 +29,24 @@ class SkillManager:
         return self._skill_dir(name) / "SKILL.md"
 
     @staticmethod
+    def _parse_frontmatter(raw: str) -> tuple[dict[str, Any], str]:
+        text = raw.strip()
+        if not text.startswith("---"):
+            return {}, raw
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return {}, raw
+        fm_raw = parts[1].strip()
+        body = parts[2].lstrip("\n")
+        try:
+            obj = json.loads(fm_raw)
+            if isinstance(obj, dict):
+                return obj, body
+        except Exception:
+            pass
+        return {}, body
+
+    @staticmethod
     def _clip(text: str, limit: int = 1200) -> str:
         if len(text) <= limit:
             return text
@@ -181,3 +199,104 @@ class SkillManager:
         )
         promoted["outcome_count"] = len(outcomes)
         return promoted
+
+    def improve_from_workflow(
+        self,
+        *,
+        skill_name: str,
+        objective: str,
+        workflow_id: str,
+        handoff: dict[str, Any],
+        outcomes: list[dict[str, str]],
+        max_improvement_chars: int = 2500,
+    ) -> dict[str, Any]:
+        current = self.read(name=skill_name)
+        metadata, body = self._parse_frontmatter(str(current.get("content", "")))
+        existing_desc = str(metadata.get("description", "")).strip() or f"Workflow skill for objective: {objective}"
+        existing_tags = [str(t).strip() for t in metadata.get("tags", []) if str(t).strip()]
+        uniq_tags = sorted(set(existing_tags + ["workflow", "learning-loop", _slugify(objective)]))
+
+        completed_steps = [str(x) for x in handoff.get("completed_steps", []) if str(x).strip()]
+        next_actions = [str(x) for x in handoff.get("next_actions", []) if str(x).strip()]
+        failed_steps = [str(x.get("step_id", "")).strip() for x in outcomes if str(x.get("status", "")).strip() == "failed"]
+        failed_steps = [x for x in failed_steps if x]
+        summary = str(handoff.get("summary_text", "")).strip()
+
+        improvement_lines: list[str] = []
+        if completed_steps:
+            improvement_lines.append(f"- Reuse completed pattern: {', '.join(completed_steps[:4])}.")
+        if next_actions:
+            improvement_lines.append(f"- Prioritize follow-up: {', '.join(next_actions[:3])}.")
+        if failed_steps:
+            improvement_lines.append(f"- Add guardrails for failures at steps: {', '.join(failed_steps[:3])}.")
+        if summary:
+            improvement_lines.append(f"- Snapshot cue: {self._clip(summary.replace(chr(10), ' '), 220)}")
+        if not improvement_lines:
+            improvement_lines.append("- No significant deltas detected; keep existing procedure.")
+
+        improvement_block = (
+            f"\n### {datetime.now(timezone.utc).isoformat()} (workflow: {workflow_id})\n"
+            + "\n".join(improvement_lines)
+            + "\n"
+        )
+
+        marker = "## Continuous Improvements"
+        if marker in body:
+            prefix, suffix = body.split(marker, 1)
+            improved_section = (suffix + improvement_block).strip()
+            improved_section = self._clip(improved_section, max_improvement_chars)
+            new_body = prefix.rstrip() + "\n\n" + marker + "\n" + improved_section + "\n"
+        else:
+            new_body = body.rstrip() + "\n\n" + marker + "\n" + improvement_block
+
+        updated = self.create_or_update(
+            name=skill_name,
+            description=existing_desc,
+            instructions=new_body,
+            tags=uniq_tags,
+            source="workflow_learning_loop",
+            workflow_id=workflow_id,
+        )
+        updated["outcome_count"] = len(outcomes)
+        updated["mode"] = "improved"
+        return updated
+
+    def auto_learn_from_workflow(
+        self,
+        *,
+        objective: str,
+        workflow_id: str,
+        handoff: dict[str, Any],
+        outcomes: list[dict[str, str]],
+        skill_name: str = "",
+        min_completed_steps: int = 2,
+    ) -> dict[str, Any]:
+        completed = [x for x in outcomes if str(x.get("status", "")).strip() == "completed"]
+        if len(completed) < max(1, int(min_completed_steps)):
+            return {
+                "triggered": False,
+                "reason": "not_enough_completed_steps",
+                "completed_steps": len(completed),
+                "required_min_completed_steps": max(1, int(min_completed_steps)),
+            }
+
+        resolved_name = skill_name.strip() or f"{objective.strip()} workflow"
+        if self._skill_file(resolved_name).exists():
+            updated = self.improve_from_workflow(
+                skill_name=resolved_name,
+                objective=objective,
+                workflow_id=workflow_id,
+                handoff=handoff,
+                outcomes=outcomes,
+            )
+            return {"triggered": True, "mode": "improved", "skill": updated}
+
+        created = self.promote_from_workflow(
+            skill_name=resolved_name,
+            objective=objective,
+            workflow_id=workflow_id,
+            handoff=handoff,
+            outcomes=outcomes,
+        )
+        created["mode"] = "created"
+        return {"triggered": True, "mode": "created", "skill": created}

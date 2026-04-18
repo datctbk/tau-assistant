@@ -24,6 +24,21 @@ _spec.loader.exec_module(_mod)
 AssistantExtension = _mod.AssistantExtension
 
 
+class _FakeSubSession:
+    def __init__(self, events):
+        self._events = events
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def prompt(self, task):
+        del task
+        return list(self._events)
+
+
 def _ctx_with_workspace(workspace: str) -> MagicMock:
     ctx = MagicMock()
     ctx.print = MagicMock()
@@ -45,9 +60,16 @@ def test_tools_exist():
     assert names == {
         "assistant_profile_get",
         "assistant_profile_set",
+        "assistant_dialectic_profile_get",
+        "assistant_dialectic_profile_update",
+        "assistant_dialectic_profile_infer",
         "assistant_plan_validate",
         "assistant_workflow_run",
         "assistant_meeting_prep",
+        "assistant_subagent_run",
+        "assistant_subagent_parallel",
+        "assistant_routine_manage",
+        "assistant_routine_run_due",
         "assistant_session_search",
         "assistant_session_recall",
         "assistant_web_rank",
@@ -79,6 +101,39 @@ def test_profile_roundtrip(tmp_path):
     parsed2 = json.loads(out2)
     assert parsed2["goals"] == ["ship fast"]
     assert parsed2["preferences"]["tone"] == "concise"
+
+
+def test_dialectic_profile_get_update_infer(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    got = json.loads(ext._handle_dialectic_profile_get())
+    assert got["ok"] is True
+    assert "dimensions" in got["dialectic_profile"]
+
+    updated = json.loads(
+        ext._handle_dialectic_profile_update(
+            dimension="speed_vs_quality",
+            score=-0.6,
+            confidence=0.9,
+            rationale="User emphasized quality first.",
+            evidence_json='["quality first","careful rollout"]',
+        )
+    )
+    assert updated["ok"] is True
+    assert updated["updated"]["key"] == "speed_vs_quality"
+    assert updated["updated"]["dimension"]["score"] <= 0
+
+    ext._handle_profile_set(
+        goals_json='["ship quickly with quality"]',
+        preferences_json='{"tone":"concise","risk":"balanced"}',
+        boundaries_json='["require approval for risky changes"]',
+    )
+    inferred = json.loads(ext._handle_dialectic_profile_infer(query="quality approval concise"))
+    assert inferred["ok"] is True
+    assert inferred["inference"]["updated"] is True
+    dims = inferred["inference"]["profile"]["dimensions"]
+    assert "risk_acceptance_vs_safety" in dims
 
 
 def test_plan_validate_returns_topo_order(tmp_path):
@@ -439,3 +494,174 @@ def test_session_search_and_recall(tmp_path):
     assert recalled["ok"] is True
     assert recalled["session"]["session_id"] == "sess-alpha-123"
     assert "Focus: packaging" in recalled["session"]["summary_text"]
+
+
+def test_workflow_auto_skill_learning_create_then_improve(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    created = json.loads(
+        ext._handle_workflow_run(
+            objective="release coordination",
+            workflow_id="wf-auto-learn-1",
+            steps_json=(
+                '[{"id":"s1","title":"draft plan","action":"noop"},'
+                '{"id":"s2","title":"review plan","depends_on":["s1"],"action":"noop"}]'
+            ),
+            execution_mode="execute",
+            policy_profile="dev",
+            auto_learn_skill=True,
+            auto_learn_min_completed_steps=2,
+            skill_name="Release Coordination Skill",
+        )
+    )
+    assert created["ok"] is True
+    assert created["skill_auto_learning"] is not None
+    assert created["skill_auto_learning"]["triggered"] is True
+    assert created["skill_auto_learning"]["mode"] == "created"
+    skill_path = Path(created["skill_auto_learning"]["skill"]["path"])
+    assert skill_path.is_file()
+
+    improved = json.loads(
+        ext._handle_workflow_run(
+            objective="release coordination",
+            workflow_id="wf-auto-learn-2",
+            steps_json=(
+                '[{"id":"s1","title":"draft plan","action":"noop"},'
+                '{"id":"s2","title":"execute release","depends_on":["s1"],"action":"noop"}]'
+            ),
+            execution_mode="execute",
+            policy_profile="dev",
+            auto_learn_skill=True,
+            auto_learn_min_completed_steps=2,
+            skill_name="Release Coordination Skill",
+        )
+    )
+    assert improved["ok"] is True
+    assert improved["skill_auto_learning"] is not None
+    assert improved["skill_auto_learning"]["triggered"] is True
+    assert improved["skill_auto_learning"]["mode"] == "improved"
+    body = skill_path.read_text(encoding="utf-8")
+    assert "## Continuous Improvements" in body
+
+
+def test_workflow_auto_skill_learning_skips_when_too_few_steps(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    result = json.loads(
+        ext._handle_workflow_run(
+            objective="tiny task",
+            workflow_id="wf-auto-learn-skip",
+            steps_json='[{"id":"s1","title":"only one step","action":"noop"}]',
+            execution_mode="execute",
+            policy_profile="dev",
+            auto_learn_skill=True,
+            auto_learn_min_completed_steps=2,
+        )
+    )
+    assert result["ok"] is True
+    assert result["skill_auto_learning"] is not None
+    assert result["skill_auto_learning"]["triggered"] is False
+    assert result["skill_auto_learning"]["reason"] == "not_enough_completed_steps"
+
+
+def test_routine_manage_and_run_due_delivery(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    created = json.loads(
+        ext._handle_routine_manage(
+            action="create",
+            routine_id="r1",
+            title="daily status",
+            interval_minutes=60,
+            delivery_connector="chat",
+            delivery_target="team-ops",
+            delivery_template="Routine {routine_title} due at {timestamp}",
+        )
+    )
+    assert created["ok"] is True
+    assert created["routine"]["id"] == "r1"
+
+    ran = json.loads(ext._handle_routine_run_due(limit=5))
+    assert ran["ok"] is True
+    assert ran["delivered_count"] == 1
+    assert ran["failed_count"] == 0
+    assert ran["deliveries"][0]["connector"] == "chat"
+    assert ran["deliveries"][0]["payload"]["channel"] == "team-ops"
+
+    listed = json.loads(ext._handle_routine_manage(action="list"))
+    assert listed["ok"] is True
+    assert listed["count"] >= 1
+    row = next(x for x in listed["routines"] if x["id"] == "r1")
+    assert row["last_run"] is not None
+
+
+def test_routine_run_due_failure_does_not_mark_run(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    json.loads(
+        ext._handle_routine_manage(
+            action="create",
+            routine_id="r2",
+            title="broken delivery",
+            interval_minutes=60,
+            delivery_connector="email",
+            delivery_target="",
+        )
+    )
+    ran = json.loads(ext._handle_routine_run_due(limit=5))
+    assert ran["ok"] is True
+    assert ran["delivered_count"] == 0
+    assert ran["failed_count"] == 1
+    assert ran["failures"][0]["routine_id"] == "r2"
+
+    listed = json.loads(ext._handle_routine_manage(action="list"))
+    row = next(x for x in listed["routines"] if x["id"] == "r2")
+    assert row["last_run"] is None
+
+
+def test_subagent_run_single(tmp_path):
+    ext = AssistantExtension()
+    ctx = _ctx_with_workspace(str(tmp_path))
+    ext.on_load(ctx)
+
+    from tau.core.types import TextDelta
+
+    ctx.create_sub_session = MagicMock(
+        return_value=_FakeSubSession([TextDelta(text="analysis complete")])
+    )
+    result = json.loads(
+        ext._handle_subagent_run(
+            task="find release risks",
+            persona="",
+            max_turns=4,
+        )
+    )
+    assert result["ok"] is True
+    assert "analysis complete" in result["result"]
+
+
+def test_subagent_parallel(tmp_path):
+    ext = AssistantExtension()
+    ctx = _ctx_with_workspace(str(tmp_path))
+    ext.on_load(ctx)
+
+    from tau.core.types import TextDelta
+
+    # Return deterministic short output for each spawned sub-session.
+    ctx.create_sub_session = MagicMock(
+        return_value=_FakeSubSession([TextDelta(text="done")])
+    )
+    result = json.loads(
+        ext._handle_subagent_parallel(
+            tasks_json='[{"id":"t1","task":"scan code"},{"id":"t2","task":"verify tests"}]',
+            max_workers=2,
+        )
+    )
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert result["completed"] == 2
+    assert result["failed"] == 0

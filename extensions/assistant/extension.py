@@ -29,12 +29,16 @@ from connectors import CalendarConnector, ChatConnector, EmailConnector, NoteCon
 from checkpoint_manager import CheckpointManager
 from context_compressor import WorkflowContextCompressor
 from cross_connector_routines import run_meeting_prep_routine
+from dialectic_profile import DialecticProfileManager
 from insights_engine import AssistantInsightsEngine
 from memory_manager import MemoryManager
 from planner import PlanStep, WorkflowPlan
 from profile import UserProfile
+from routine_delivery import RoutineDeliveryRunner
+from routine_engine import Routine, RoutineEngine
 from session_recall import SessionRecallEngine
 from skill_manager import SkillManager
+from subagent_delegate import SubagentDelegator, load_tau_agents_personas
 from web_source_ranker import normalize_and_rank_sources
 from workflow_executor import WorkflowExecutor
 from workflow_policy import WorkflowPolicyEnforcer
@@ -82,10 +86,12 @@ class AssistantExtension(Extension):
         self._ext_context: ExtensionContext | None = None
         self._workspace_root = "."
         self._memory = MemoryManager(self._workspace_root)
+        self._dialectic = DialecticProfileManager(self._workspace_root)
         self._skills = SkillManager(self._workspace_root)
         self._checkpoints = CheckpointManager(self._workspace_root)
         self._insights = AssistantInsightsEngine(self._workspace_root)
         self._context_engine = WorkflowContextCompressor()
+        self._delegate_personas = load_tau_agents_personas()
 
     def on_load(self, context: ExtensionContext) -> None:
         self._ext_context = context
@@ -93,9 +99,11 @@ class AssistantExtension(Extension):
         if agent_cfg and getattr(agent_cfg, "workspace_root", None):
             self._workspace_root = str(agent_cfg.workspace_root)
         self._memory.set_workspace_root(self._workspace_root)
+        self._dialectic = DialecticProfileManager(self._workspace_root)
         self._skills = SkillManager(self._workspace_root)
         self._checkpoints = CheckpointManager(self._workspace_root)
         self._insights = AssistantInsightsEngine(self._workspace_root)
+        self._delegate_personas = load_tau_agents_personas()
 
     def tools(self) -> list[ToolDefinition]:
         return [
@@ -134,6 +142,63 @@ class AssistantExtension(Extension):
                     ),
                 },
                 handler=self._handle_profile_set,
+            ),
+            ToolDefinition(
+                name="assistant_dialectic_profile_get",
+                description="Read advanced dialectic user model (tradeoff axes, confidence, evidence).",
+                parameters={},
+                handler=self._handle_dialectic_profile_get,
+            ),
+            ToolDefinition(
+                name="assistant_dialectic_profile_update",
+                description="Manually update a dialectic dimension with score/confidence and rationale.",
+                parameters={
+                    "dimension": ToolParameter(
+                        type="string",
+                        description="Dimension key (e.g. speed_vs_quality, autonomy_vs_control).",
+                    ),
+                    "score": ToolParameter(
+                        type="number",
+                        description="Score between -1 and +1.",
+                    ),
+                    "confidence": ToolParameter(
+                        type="number",
+                        description="Confidence between 0 and 1.",
+                    ),
+                    "rationale": ToolParameter(
+                        type="string",
+                        description="Optional rationale text.",
+                        required=False,
+                    ),
+                    "evidence_json": ToolParameter(
+                        type="string",
+                        description='Optional JSON array of evidence snippets.',
+                        required=False,
+                    ),
+                },
+                handler=self._handle_dialectic_profile_update,
+            ),
+            ToolDefinition(
+                name="assistant_dialectic_profile_infer",
+                description="Infer dialectic profile from user profile, memory context, and optional evidence text.",
+                parameters={
+                    "query": ToolParameter(
+                        type="string",
+                        description="Optional memory query used to gather evidence context.",
+                        required=False,
+                    ),
+                    "evidence_text": ToolParameter(
+                        type="string",
+                        description="Optional extra evidence text.",
+                        required=False,
+                    ),
+                    "notes": ToolParameter(
+                        type="string",
+                        description="Optional note stored on dialectic profile.",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_dialectic_profile_infer,
             ),
             ToolDefinition(
                 name="assistant_plan_validate",
@@ -207,6 +272,16 @@ class AssistantExtension(Extension):
                         description="Optional skill name for promotion. Defaults to objective-derived name.",
                         required=False,
                     ),
+                    "auto_learn_skill": ToolParameter(
+                        type="boolean",
+                        description="Enable automatic skill creation/improvement loop from workflow outcomes.",
+                        required=False,
+                    ),
+                    "auto_learn_min_completed_steps": ToolParameter(
+                        type="integer",
+                        description="Minimum completed steps required before auto-learning triggers (default 2).",
+                        required=False,
+                    ),
                 },
                 handler=self._handle_workflow_run,
             ),
@@ -238,6 +313,128 @@ class AssistantExtension(Extension):
                     ),
                 },
                 handler=self._handle_meeting_prep,
+            ),
+            ToolDefinition(
+                name="assistant_subagent_run",
+                description="Delegate a focused task to a sub-agent session (optionally using tau-agents persona).",
+                parameters={
+                    "task": ToolParameter(
+                        type="string",
+                        description="Task text delegated to sub-agent.",
+                    ),
+                    "persona": ToolParameter(
+                        type="string",
+                        description="Optional persona from tau-agents built-ins (explore, plan, verify).",
+                        required=False,
+                    ),
+                    "system_prompt": ToolParameter(
+                        type="string",
+                        description="Optional direct system prompt override.",
+                        required=False,
+                    ),
+                    "max_turns": ToolParameter(
+                        type="integer",
+                        description="Optional max turns for sub-agent (default 8).",
+                        required=False,
+                    ),
+                    "model": ToolParameter(
+                        type="string",
+                        description="Optional model override for sub-agent.",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_subagent_run,
+            ),
+            ToolDefinition(
+                name="assistant_subagent_parallel",
+                description="Run multiple delegated tasks in parallel sub-agent sessions.",
+                parameters={
+                    "tasks_json": ToolParameter(
+                        type="string",
+                        description='JSON array like [{"id":"t1","task":"...","persona":"explore"}].',
+                    ),
+                    "persona": ToolParameter(
+                        type="string",
+                        description="Optional default persona for tasks without persona.",
+                        required=False,
+                    ),
+                    "system_prompt": ToolParameter(
+                        type="string",
+                        description="Optional shared system prompt override.",
+                        required=False,
+                    ),
+                    "max_turns": ToolParameter(
+                        type="integer",
+                        description="Optional max turns per task (default 8).",
+                        required=False,
+                    ),
+                    "model": ToolParameter(
+                        type="string",
+                        description="Optional model override for all sub-agents.",
+                        required=False,
+                    ),
+                    "max_workers": ToolParameter(
+                        type="integer",
+                        description="Optional max parallel workers (default 3).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_subagent_parallel,
+            ),
+            ToolDefinition(
+                name="assistant_routine_manage",
+                description="Create, list, update, delete, enable, or disable assistant routines with delivery settings.",
+                parameters={
+                    "action": ToolParameter(
+                        type="string",
+                        description="One of: create, list, delete, enable, disable.",
+                        enum=["create", "list", "delete", "enable", "disable"],
+                    ),
+                    "routine_id": ToolParameter(
+                        type="string",
+                        description="Routine id for create/delete/enable/disable.",
+                        required=False,
+                    ),
+                    "title": ToolParameter(
+                        type="string",
+                        description="Routine title for create.",
+                        required=False,
+                    ),
+                    "interval_minutes": ToolParameter(
+                        type="integer",
+                        description="Routine interval in minutes for create (default 60).",
+                        required=False,
+                    ),
+                    "delivery_connector": ToolParameter(
+                        type="string",
+                        description="Delivery connector: chat, email, or note (default chat).",
+                        enum=["chat", "email", "note"],
+                        required=False,
+                    ),
+                    "delivery_target": ToolParameter(
+                        type="string",
+                        description="Connector-specific target (chat channel, email address, or note id).",
+                        required=False,
+                    ),
+                    "delivery_template": ToolParameter(
+                        type="string",
+                        description="Optional delivery template with variables: {routine_id}, {routine_title}, {timestamp}.",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_routine_manage,
+            ),
+            ToolDefinition(
+                name="assistant_routine_run_due",
+                description="Run due routines and deliver outputs through configured connectors.",
+                parameters={
+                    "limit": ToolParameter(
+                        type="integer",
+                        description="Optional max due routines to run in one invocation (default 20).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_routine_run_due,
             ),
             ToolDefinition(
                 name="assistant_session_search",
@@ -488,9 +685,16 @@ class AssistantExtension(Extension):
             "Tools:\n"
             "- assistant_profile_get\n"
             "- assistant_profile_set\n"
+            "- assistant_dialectic_profile_get\n"
+            "- assistant_dialectic_profile_update\n"
+            "- assistant_dialectic_profile_infer\n"
             "- assistant_plan_validate\n"
             "- assistant_workflow_run\n"
             "- assistant_meeting_prep\n"
+            "- assistant_subagent_run\n"
+            "- assistant_subagent_parallel\n"
+            "- assistant_routine_manage\n"
+            "- assistant_routine_run_due\n"
             "- assistant_session_search\n"
             "- assistant_session_recall\n"
             "- assistant_web_rank\n"
@@ -597,6 +801,73 @@ class AssistantExtension(Extension):
             }
         )
 
+    def _handle_dialectic_profile_get(self) -> str:
+        profile = self._dialectic.load()
+        return _json_dumps({"ok": True, "dialectic_profile": self._dialectic.as_dict(profile)})
+
+    def _handle_dialectic_profile_update(
+        self,
+        dimension: str,
+        score: float,
+        confidence: float,
+        rationale: str = "",
+        evidence_json: str | None = None,
+    ) -> str:
+        evidence: list[str] = []
+        if evidence_json:
+            evidence = [str(x) for x in _parse_json_array(evidence_json, field="evidence_json")]
+        updated = self._dialectic.update_dimension(
+            key=(dimension or "").strip(),
+            score=float(score),
+            confidence=float(confidence),
+            rationale=rationale,
+            evidence=evidence,
+        )
+        self._memory.add_memory(
+            content=(
+                f"Updated dialectic dimension {updated['key']} "
+                f"score={updated['dimension']['score']:.2f} "
+                f"confidence={updated['dimension']['confidence']:.2f}."
+            ),
+            kind="preference",
+            source="assistant_dialectic_profile_update",
+            confidence=0.84,
+            tags=["dialectic", "profile"],
+            metadata={"dimension": updated["key"]},
+        )
+        return _json_dumps({"ok": True, "updated": updated})
+
+    def _handle_dialectic_profile_infer(
+        self,
+        query: str = "",
+        evidence_text: str = "",
+        notes: str = "",
+    ) -> str:
+        profile = UserProfile.load(self._workspace_root)
+        query_text = (query or "preference priorities style risk quality speed").strip()
+        memory_context = self._memory.prefetch_context(query=query_text, limit=6)
+        combined = "\n".join(
+            [
+                f"name: {profile.name}",
+                f"goals: {'; '.join(profile.goals)}",
+                f"preferences: {json.dumps(profile.preferences, ensure_ascii=False)}",
+                f"boundaries: {'; '.join(profile.boundaries)}",
+                memory_context,
+                (evidence_text or "").strip(),
+            ]
+        ).strip()
+        inferred = self._dialectic.infer(evidence_text=combined, notes=notes)
+        if inferred.get("updated"):
+            self._memory.add_memory(
+                content="Refreshed dialectic profile from profile+memory evidence context.",
+                kind="preference",
+                source="assistant_dialectic_profile_infer",
+                confidence=0.8,
+                tags=["dialectic", "inference"],
+                metadata={"query": query_text},
+            )
+        return _json_dumps({"ok": True, "inference": inferred})
+
     def _handle_workflow_run(
         self,
         objective: str,
@@ -608,6 +879,8 @@ class AssistantExtension(Extension):
         approved_risky_actions: bool = False,
         promote_to_skill: bool = False,
         skill_name: str = "",
+        auto_learn_skill: bool = False,
+        auto_learn_min_completed_steps: int = 2,
     ) -> str:
         mode = (execution_mode or "dry_run").strip()
         if mode not in {"dry_run", "enqueue_prompts", "execute"}:
@@ -676,6 +949,7 @@ class AssistantExtension(Extension):
             },
         )
         promotion: dict[str, Any] | None = None
+        auto_learning: dict[str, Any] | None = None
         if bool(promote_to_skill):
             resolved_skill_name = skill_name.strip() or f"{objective.strip()} workflow"
             promotion = self._skills.promote_from_workflow(
@@ -700,6 +974,34 @@ class AssistantExtension(Extension):
                     "skill_path": promotion.get("path", ""),
                 },
             )
+        if bool(auto_learn_skill):
+            resolved_skill_name = skill_name.strip() or f"{objective.strip()} workflow"
+            auto_learning = self._skills.auto_learn_from_workflow(
+                objective=objective,
+                workflow_id=plan.id,
+                handoff=handoff,
+                outcomes=outcomes,
+                skill_name=resolved_skill_name,
+                min_completed_steps=max(1, int(auto_learn_min_completed_steps or 2)),
+            )
+            if auto_learning.get("triggered"):
+                learned = auto_learning.get("skill", {})
+                self._memory.add_memory(
+                    content=(
+                        f"Auto-learn loop {auto_learning.get('mode', 'updated')} skill "
+                        f"'{resolved_skill_name}' from workflow_id={plan.id}."
+                    ),
+                    kind="reference",
+                    source="assistant_skill_autolearn",
+                    confidence=0.86,
+                    tags=["skill", "learning-loop"],
+                    metadata={
+                        "workflow_id": plan.id,
+                        "skill_name": resolved_skill_name,
+                        "skill_path": str(learned.get("path", "")),
+                        "mode": str(auto_learning.get("mode", "")),
+                    },
+                )
         memory_write = self._memory.on_workflow_complete(
             workflow_id=plan.id,
             objective=plan.objective,
@@ -722,7 +1024,200 @@ class AssistantExtension(Extension):
                 "handoff": handoff,
                 "handoff_checkpoint": str(handoff_checkpoint),
                 "skill_promotion": promotion,
+                "skill_auto_learning": auto_learning,
                 "outcomes": outcomes,
+            }
+        )
+
+    def _build_connector_router(self) -> ConnectorRouter:
+        router = ConnectorRouter()
+        router.register(CalendarConnector())
+        router.register(NoteConnector())
+        router.register(ChatConnector())
+        router.register(EmailConnector())
+        return router
+
+    def _handle_routine_manage(
+        self,
+        action: str,
+        routine_id: str | None = None,
+        title: str | None = None,
+        interval_minutes: int = 60,
+        delivery_connector: str = "chat",
+        delivery_target: str = "",
+        delivery_template: str = "",
+    ) -> str:
+        act = (action or "").strip().lower()
+        engine = RoutineEngine.load_workspace(self._workspace_root)
+
+        if act == "list":
+            return _json_dumps(
+                {
+                    "ok": True,
+                    "action": "list",
+                    "count": len(engine.routines),
+                    "routines": [r.__dict__ for r in engine.routines],
+                }
+            )
+
+        rid = (routine_id or "").strip()
+        if not rid:
+            return "Error: routine_id is required for create/delete/enable/disable."
+
+        if act == "create":
+            routine_title = (title or "").strip()
+            if not routine_title:
+                return "Error: title is required for action=create."
+            routine = Routine(
+                id=rid,
+                title=routine_title,
+                interval_minutes=max(1, int(interval_minutes or 60)),
+                enabled=True,
+                delivery_connector=(delivery_connector or "chat").strip().lower() or "chat",
+                delivery_target=(delivery_target or "").strip(),
+                delivery_template=(delivery_template or "").strip(),
+            )
+            engine.upsert(routine)
+            path = engine.save_workspace(self._workspace_root)
+            return _json_dumps({"ok": True, "action": "create", "routine": routine.__dict__, "path": path})
+
+        if act == "delete":
+            removed = engine.delete(rid)
+            path = engine.save_workspace(self._workspace_root)
+            return _json_dumps({"ok": True, "action": "delete", "removed": removed, "path": path})
+
+        if act in {"enable", "disable"}:
+            found = False
+            for r in engine.routines:
+                if r.id == rid:
+                    r.enabled = act == "enable"
+                    found = True
+                    break
+            if not found:
+                return f"Error: routine not found: {rid}"
+            path = engine.save_workspace(self._workspace_root)
+            return _json_dumps({"ok": True, "action": act, "routine_id": rid, "path": path})
+
+        return "Error: action must be one of create, list, delete, enable, disable."
+
+    def _handle_routine_run_due(self, limit: int = 20) -> str:
+        engine = RoutineEngine.load_workspace(self._workspace_root)
+        due = engine.due_routines()
+        cap = max(1, int(limit or 20))
+        selected = due[:cap]
+        runner = RoutineDeliveryRunner(self._build_connector_router())
+
+        deliveries: list[dict[str, Any]] = []
+        failures: list[dict[str, str]] = []
+        for routine in selected:
+            try:
+                rec = runner.deliver(routine)
+                engine.mark_run(routine.id)
+                deliveries.append(rec)
+                append_audit_record(
+                    self._workspace_root,
+                    "routine.delivery_sent",
+                    {
+                        "routine_id": routine.id,
+                        "connector": rec.get("connector", ""),
+                        "action": rec.get("action", ""),
+                    },
+                )
+                append_assistant_event(
+                    self._workspace_root,
+                    make_assistant_event(
+                        family="routine",
+                        name="delivery_sent",
+                        payload={
+                            "routine_id": routine.id,
+                            "connector": rec.get("connector", ""),
+                        },
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append({"routine_id": routine.id, "error": str(exc)})
+                append_audit_record(
+                    self._workspace_root,
+                    "routine.delivery_failed",
+                    {"routine_id": routine.id, "error": str(exc)},
+                )
+                append_assistant_event(
+                    self._workspace_root,
+                    make_assistant_event(
+                        family="routine",
+                        name="delivery_failed",
+                        payload={"routine_id": routine.id, "error": str(exc)},
+                        severity="warning",
+                    ),
+                )
+
+        path = engine.save_workspace(self._workspace_root)
+        return _json_dumps(
+            {
+                "ok": True,
+                "due_count": len(due),
+                "run_count": len(selected),
+                "delivered_count": len(deliveries),
+                "failed_count": len(failures),
+                "deliveries": deliveries,
+                "failures": failures,
+                "path": path,
+            }
+        )
+
+    def _handle_subagent_run(
+        self,
+        task: str,
+        persona: str = "",
+        system_prompt: str = "",
+        max_turns: int = 8,
+        model: str = "",
+    ) -> str:
+        delegator = SubagentDelegator(self._ext_context, personas=self._delegate_personas)
+        result = delegator.run_one(
+            task=task,
+            persona=persona,
+            system_prompt=system_prompt,
+            max_turns=max_turns,
+            model=model,
+        )
+        return _json_dumps(
+            {
+                "ok": True,
+                "persona": persona,
+                "result": result,
+            }
+        )
+
+    def _handle_subagent_parallel(
+        self,
+        tasks_json: str,
+        persona: str = "",
+        system_prompt: str = "",
+        max_turns: int = 8,
+        model: str = "",
+        max_workers: int = 3,
+    ) -> str:
+        tasks = _parse_json_array(tasks_json, field="tasks_json")
+        rows = [x for x in tasks if isinstance(x, dict)]
+        delegator = SubagentDelegator(self._ext_context, personas=self._delegate_personas)
+        results = delegator.run_parallel(
+            tasks=[{str(k): str(v) for k, v in row.items()} for row in rows],
+            persona=persona,
+            system_prompt=system_prompt,
+            max_turns=max_turns,
+            model=model,
+            max_workers=max_workers,
+        )
+        completed = len([x for x in results if x.get("status") == "completed"])
+        failed = len([x for x in results if x.get("status") == "failed"])
+        return _json_dumps(
+            {
+                "ok": True,
+                "count": len(results),
+                "completed": completed,
+                "failed": failed,
+                "results": results,
             }
         )
 

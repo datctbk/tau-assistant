@@ -15,6 +15,9 @@ class Routine:
     interval_minutes: int
     enabled: bool = True
     last_run: str | None = None
+    delivery_connector: str = "chat"
+    delivery_target: str = ""
+    delivery_template: str = ""
 
 
 @dataclass
@@ -44,6 +47,25 @@ class RoutineEngine:
                 r.last_run = now.isoformat()
                 return
         raise ValueError(f"Routine {routine_id!r} not found")
+
+    def upsert(self, routine: Routine) -> Routine:
+        rid = routine.id.strip()
+        if not rid:
+            raise ValueError("Routine id is required.")
+        for idx, existing in enumerate(self.routines):
+            if existing.id == rid:
+                self.routines[idx] = routine
+                return routine
+        self.routines.append(routine)
+        return routine
+
+    def delete(self, routine_id: str) -> bool:
+        rid = routine_id.strip()
+        for idx, existing in enumerate(self.routines):
+            if existing.id == rid:
+                del self.routines[idx]
+                return True
+        return False
 
     def start_scheduler(
         self,
@@ -104,6 +126,9 @@ class RoutineEngine:
                         interval_minutes=int(item.get("interval_minutes", 60)),
                         enabled=bool(item.get("enabled", True)),
                         last_run=str(item.get("last_run")) if item.get("last_run") else None,
+                        delivery_connector=str(item.get("delivery_connector", "chat") or "chat"),
+                        delivery_target=str(item.get("delivery_target", "") or ""),
+                        delivery_template=str(item.get("delivery_template", "") or ""),
                     )
                 )
             except Exception:  # noqa: BLE001

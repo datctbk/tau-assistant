@@ -31,9 +31,16 @@ After loading the extension, these tools are available:
 
 - `assistant_profile_get`
 - `assistant_profile_set`
+- `assistant_dialectic_profile_get`
+- `assistant_dialectic_profile_update`
+- `assistant_dialectic_profile_infer`
 - `assistant_plan_validate`
 - `assistant_workflow_run`
 - `assistant_meeting_prep`
+- `assistant_subagent_run`
+- `assistant_subagent_parallel`
+- `assistant_routine_manage`
+- `assistant_routine_run_due`
 - `assistant_session_search`
 - `assistant_session_recall`
 - `assistant_web_rank`

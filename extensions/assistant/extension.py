@@ -10,6 +10,7 @@ Adds a personal-assistant layer as an extension (not tau core):
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -652,6 +653,74 @@ class AssistantExtension(Extension):
                 parameters={},
                 handler=self._handle_insights,
             ),
+            ToolDefinition(
+                name="assistant_reset_state",
+                description=(
+                    "Reset assistant state back to a clean beginner baseline "
+                    "(profile, memory, sessions, checkpoints, routines, skills, and assistant logs)."
+                ),
+                parameters={
+                    "dry_run": ToolParameter(
+                        type="boolean",
+                        description="When true (default), only preview what would be deleted.",
+                        required=False,
+                    ),
+                    "include_profile": ToolParameter(
+                        type="boolean",
+                        description="Reset user profile state under .tau/assistant/profile.json.",
+                        required=False,
+                    ),
+                    "include_dialectic_profile": ToolParameter(
+                        type="boolean",
+                        description="Reset advanced dialectic profile under .tau/assistant/dialectic_profile.json.",
+                        required=False,
+                    ),
+                    "include_skills": ToolParameter(
+                        type="boolean",
+                        description="Delete assistant skills under .tau/assistant/skills.",
+                        required=False,
+                    ),
+                    "include_routines": ToolParameter(
+                        type="boolean",
+                        description="Delete assistant routine config under .tau/assistant/routines.json.",
+                        required=False,
+                    ),
+                    "include_memory": ToolParameter(
+                        type="boolean",
+                        description=(
+                            "Delete assistant memories: .tau/assistant/memory.jsonl and local tau-memory store "
+                            "(.tau/memory)."
+                        ),
+                        required=False,
+                    ),
+                    "include_checkpoints": ToolParameter(
+                        type="boolean",
+                        description="Delete workflow and named checkpoints under .tau/checkpoints.",
+                        required=False,
+                    ),
+                    "include_events_audit": ToolParameter(
+                        type="boolean",
+                        description="Delete assistant event/audit logs under .tau/events and .tau/audit.",
+                        required=False,
+                    ),
+                    "include_sessions": ToolParameter(
+                        type="boolean",
+                        description="Delete workspace session files under .tau/sessions.",
+                        required=False,
+                    ),
+                    "include_global_memory": ToolParameter(
+                        type="boolean",
+                        description="Also delete global tau-memory store (default false, destructive).",
+                        required=False,
+                    ),
+                    "include_home_sessions": ToolParameter(
+                        type="boolean",
+                        description="Also delete home sessions at ~/.tau/sessions (default false, destructive).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_reset_state,
+            ),
         ]
 
     def slash_commands(self) -> list[SlashCommand]:
@@ -705,6 +774,7 @@ class AssistantExtension(Extension):
             "- assistant_skill_manage\n"
             "- assistant_checkpoint_create\n"
             "- assistant_insights\n"
+            "- assistant_reset_state\n"
         )
 
     def _build_plan(self, objective: str, steps_json: str, workflow_id: str | None = None) -> WorkflowPlan:
@@ -1393,6 +1463,104 @@ class AssistantExtension(Extension):
     def _handle_insights(self) -> str:
         report = self._insights.generate()
         return _json_dumps({"ok": True, "insights": report})
+
+    def _handle_reset_state(
+        self,
+        dry_run: bool = True,
+        include_profile: bool = True,
+        include_dialectic_profile: bool = True,
+        include_skills: bool = True,
+        include_routines: bool = True,
+        include_memory: bool = True,
+        include_checkpoints: bool = True,
+        include_events_audit: bool = True,
+        include_sessions: bool = True,
+        include_global_memory: bool = False,
+        include_home_sessions: bool = False,
+    ) -> str:
+        workspace_root = Path(self._workspace_root).resolve()
+        assistant_root = workspace_root / ".tau" / "assistant"
+
+        targets: list[tuple[str, Path, bool]] = []
+        if include_profile:
+            targets.append(("assistant_profile", assistant_root / "profile.json", False))
+        if include_dialectic_profile:
+            targets.append(("assistant_dialectic_profile", assistant_root / "dialectic_profile.json", False))
+        if include_skills:
+            targets.append(("assistant_skills", assistant_root / "skills", False))
+        if include_routines:
+            targets.append(("assistant_routines", assistant_root / "routines.json", False))
+        if include_memory:
+            targets.append(("assistant_jsonl_memory", assistant_root / "memory.jsonl", False))
+            targets.append(("assistant_local_tau_memory", workspace_root / ".tau" / "memory", False))
+        if include_checkpoints:
+            targets.append(("assistant_checkpoints", workspace_root / ".tau" / "checkpoints", False))
+        if include_events_audit:
+            targets.append(("assistant_event_log", workspace_root / ".tau" / "events" / "assistant-events.jsonl", False))
+            targets.append(("assistant_audit_log", workspace_root / ".tau" / "audit" / "assistant-actions.jsonl", False))
+        if include_sessions:
+            targets.append(("workspace_sessions", workspace_root / ".tau" / "sessions", False))
+
+        if include_global_memory:
+            global_root = Path.home() / ".tau" / "memory"
+            backend = getattr(self._memory, "backend", None)
+            store = getattr(backend, "_store", None)
+            maybe_global = getattr(store, "global_root", None)
+            if maybe_global is not None:
+                try:
+                    global_root = Path(maybe_global).expanduser()
+                except Exception:
+                    pass
+            targets.append(("global_tau_memory", global_root, True))
+        if include_home_sessions:
+            targets.append(("home_sessions", Path.home() / ".tau" / "sessions", True))
+
+        deduped: dict[tuple[str, str], tuple[str, Path, bool]] = {}
+        for label, path, external in targets:
+            deduped[(label, str(path))] = (label, path, external)
+
+        report: dict[str, Any] = {
+            "ok": True,
+            "dry_run": bool(dry_run),
+            "requested": {
+                "include_profile": bool(include_profile),
+                "include_dialectic_profile": bool(include_dialectic_profile),
+                "include_skills": bool(include_skills),
+                "include_routines": bool(include_routines),
+                "include_memory": bool(include_memory),
+                "include_checkpoints": bool(include_checkpoints),
+                "include_events_audit": bool(include_events_audit),
+                "include_sessions": bool(include_sessions),
+                "include_global_memory": bool(include_global_memory),
+                "include_home_sessions": bool(include_home_sessions),
+            },
+            "deleted": [],
+            "missing": [],
+            "errors": [],
+        }
+
+        for label, path, external in deduped.values():
+            resolved = path.expanduser().resolve(strict=False)
+            if not external and workspace_root not in resolved.parents and resolved != workspace_root:
+                report["errors"].append({"target": label, "path": str(resolved), "error": "outside_workspace"})
+                continue
+
+            if not resolved.exists():
+                report["missing"].append({"target": label, "path": str(resolved)})
+                continue
+
+            if dry_run:
+                continue
+            try:
+                if resolved.is_dir() and not resolved.is_symlink():
+                    shutil.rmtree(resolved)
+                else:
+                    resolved.unlink()
+                report["deleted"].append({"target": label, "path": str(resolved)})
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append({"target": label, "path": str(resolved), "error": str(exc)})
+
+        return _json_dumps(report)
 
     def _handle_meeting_prep(
         self,

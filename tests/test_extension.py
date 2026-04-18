@@ -80,6 +80,7 @@ def test_tools_exist():
         "assistant_skill_manage",
         "assistant_checkpoint_create",
         "assistant_insights",
+        "assistant_reset_state",
     }
 
 
@@ -665,3 +666,81 @@ def test_subagent_parallel(tmp_path):
     assert result["count"] == 2
     assert result["completed"] == 2
     assert result["failed"] == 0
+
+
+def test_reset_state_dry_run_then_apply(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    # Seed assistant state artifacts.
+    ext._handle_profile_set(
+        name="Reset Me",
+        goals_json='["start over"]',
+        preferences_json='{"tone":"concise"}',
+        boundaries_json='["none"]',
+    )
+    ext._handle_memory_add(content="Remember release conventions.", kind="reference", source="user")
+    ext._handle_skill_manage(
+        action="create",
+        name="Reset Skill",
+        description="Temporary skill",
+        instructions="1. temporary",
+    )
+    ext._handle_routine_manage(
+        action="create",
+        routine_id="reset-r1",
+        title="reset routine",
+        interval_minutes=30,
+        delivery_connector="chat",
+        delivery_target="ops",
+    )
+    ext._handle_checkpoint_create(name="reset-cp", summary="for reset test")
+
+    sessions_dir = tmp_path / ".tau" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "sess-reset.json").write_text(
+        json.dumps({"id": "sess-reset", "messages": [{"role": "user", "content": "hello"}]}),
+        encoding="utf-8",
+    )
+
+    event_log = tmp_path / ".tau" / "events" / "assistant-events.jsonl"
+    event_log.parent.mkdir(parents=True, exist_ok=True)
+    event_log.write_text('{"family":"assistant","name":"seed"}\n', encoding="utf-8")
+    audit_log = tmp_path / ".tau" / "audit" / "assistant-actions.jsonl"
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
+    audit_log.write_text('{"event_type":"seed"}\n', encoding="utf-8")
+
+    keep_file = tmp_path / ".tau" / "other" / "keep.txt"
+    keep_file.parent.mkdir(parents=True, exist_ok=True)
+    keep_file.write_text("keep", encoding="utf-8")
+
+    assert (tmp_path / ".tau" / "assistant" / "profile.json").is_file()
+    assert (tmp_path / ".tau" / "assistant" / "routines.json").is_file()
+    assert (tmp_path / ".tau" / "assistant" / "skills").is_dir()
+    assert (tmp_path / ".tau" / "memory").exists()
+    assert (tmp_path / ".tau" / "checkpoints").exists()
+    assert sessions_dir.exists()
+    assert event_log.exists()
+    assert audit_log.exists()
+    assert keep_file.exists()
+
+    preview = json.loads(ext._handle_reset_state(dry_run=True))
+    assert preview["ok"] is True
+    assert preview["dry_run"] is True
+    assert preview["deleted"] == []
+    assert (tmp_path / ".tau" / "assistant" / "profile.json").is_file()
+    assert sessions_dir.exists()
+
+    applied = json.loads(ext._handle_reset_state(dry_run=False))
+    assert applied["ok"] is True
+    assert applied["dry_run"] is False
+    assert len(applied["deleted"]) >= 1
+    assert not (tmp_path / ".tau" / "assistant" / "profile.json").exists()
+    assert not (tmp_path / ".tau" / "assistant" / "routines.json").exists()
+    assert not (tmp_path / ".tau" / "assistant" / "skills").exists()
+    assert not (tmp_path / ".tau" / "memory").exists()
+    assert not (tmp_path / ".tau" / "checkpoints").exists()
+    assert not sessions_dir.exists()
+    assert not event_log.exists()
+    assert not audit_log.exists()
+    assert keep_file.exists()

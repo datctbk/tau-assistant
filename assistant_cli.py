@@ -32,11 +32,37 @@ def _build_plan(objective: str, steps: list[dict[str, Any]], workflow_id: str) -
         sid = str(row.get("id", "")).strip()
         title = str(row.get("title", "")).strip()
         depends_on = row.get("depends_on", [])
+        action = str(row.get("action", "noop")).strip() or "noop"
+        connector = str(row.get("connector", "")).strip()
+        connector_action = str(row.get("connector_action", "")).strip()
+        payload = row.get("payload", {})
+        retries = row.get("retries", 0)
+        on_failure = str(row.get("on_failure", "stop")).strip().lower() or "stop"
         if not sid or not title:
             raise ValueError(f"Invalid step at index {idx}: id/title are required")
         if not isinstance(depends_on, list):
             raise ValueError(f"Invalid step at index {idx}: depends_on must be a list")
-        plan_steps.append(PlanStep(id=sid, title=title, depends_on=[str(x) for x in depends_on]))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Invalid step at index {idx}: payload must be an object")
+        if on_failure not in {"stop", "continue"}:
+            raise ValueError(f"Invalid step at index {idx}: on_failure must be stop|continue")
+        try:
+            retries_val = max(0, int(retries))
+        except Exception as exc:
+            raise ValueError(f"Invalid step at index {idx}: retries must be integer >= 0") from exc
+        plan_steps.append(
+            PlanStep(
+                id=sid,
+                title=title,
+                depends_on=[str(x) for x in depends_on],
+                action=action,
+                connector=connector,
+                connector_action=connector_action,
+                payload={str(k): v for k, v in payload.items()},
+                retries=retries_val,
+                on_failure=on_failure,
+            )
+        )
     return WorkflowPlan(id=workflow_id, objective=objective, steps=plan_steps)
 
 

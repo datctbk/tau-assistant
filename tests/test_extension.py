@@ -48,6 +48,9 @@ def test_tools_exist():
         "assistant_plan_validate",
         "assistant_workflow_run",
         "assistant_meeting_prep",
+        "assistant_web_rank",
+        "assistant_workflow_status",
+        "assistant_workflow_list",
         "assistant_memory_add",
         "assistant_memory_search",
         "assistant_skill_manage",
@@ -240,3 +243,142 @@ def test_checkpoint_create_and_insights(tmp_path):
     assert summary["checkpoints_total"] >= 1
     assert summary["named_checkpoints_total"] >= 1
     assert summary["skills_total"] >= 1
+
+
+def test_workflow_run_execute_connector_action(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    result = ext._handle_workflow_run(
+        objective="post status",
+        steps_json=(
+            '[{"id":"s1","title":"notify","action":"connector_action",'
+            '"connector":"chat","connector_action":"post_message",'
+            '"payload":{"channel":"ops","text":"hello"},"on_failure":"stop"}]'
+        ),
+        execution_mode="execute",
+        policy_profile="dev",
+    )
+    parsed = json.loads(result)
+    assert parsed["ok"] is True
+    assert parsed["run_status"] == "completed"
+    assert len(parsed["outcomes"]) == 1
+    assert parsed["outcomes"][0]["status"] == "completed"
+
+
+def test_workflow_run_execute_policy_requires_approval(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    result = ext._handle_workflow_run(
+        objective="post status",
+        steps_json=(
+            '[{"id":"s1","title":"notify","action":"connector_action",'
+            '"connector":"chat","connector_action":"post_message",'
+            '"payload":{"channel":"ops","text":"hello"},"on_failure":"stop"}]'
+        ),
+        execution_mode="execute",
+        policy_profile="balanced",
+        approved_risky_actions=False,
+    )
+    parsed = json.loads(result)
+    assert parsed["ok"] is True
+    assert parsed["run_status"] == "stopped_on_failure"
+    assert parsed["outcomes"][0]["status"] == "failed"
+    assert "Approval required by balanced policy" in parsed["outcomes"][0]["error"]
+
+
+def test_workflow_run_execute_resume_from_state(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    first = json.loads(
+        ext._handle_workflow_run(
+            objective="resume demo",
+            workflow_id="wf-resume-demo",
+            steps_json=(
+                '['
+                '{"id":"s1","title":"start","action":"noop"},'
+                '{"id":"s2","title":"failing note read","depends_on":["s1"],'
+                '"action":"connector_action","connector":"note","connector_action":"get_note",'
+                '"payload":{"id":"missing"},"on_failure":"stop"}'
+                ']'
+            ),
+            execution_mode="execute",
+            policy_profile="dev",
+        )
+    )
+    assert first["run_status"] == "stopped_on_failure"
+    assert any(x["step_id"] == "s1" and x["status"] == "completed" for x in first["outcomes"])
+    assert any(x["step_id"] == "s2" and x["status"] == "failed" for x in first["outcomes"])
+
+    resumed = json.loads(
+        ext._handle_workflow_run(
+            objective="resume demo",
+            workflow_id="wf-resume-demo",
+            steps_json=(
+                '['
+                '{"id":"s1","title":"start","action":"noop"},'
+                '{"id":"s2","title":"recovered","depends_on":["s1"],"action":"noop"}'
+                ']'
+            ),
+            execution_mode="execute",
+            resume=True,
+            policy_profile="dev",
+        )
+    )
+    assert resumed["run_status"] == "completed"
+    s1_completed = [x for x in resumed["outcomes"] if x["step_id"] == "s1" and x["status"] == "completed"]
+    assert len(s1_completed) == 1
+    assert any(x["step_id"] == "s2" and x["status"] == "completed" for x in resumed["outcomes"])
+
+
+def test_workflow_status_and_list(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    # Seed one completed workflow state.
+    run = json.loads(
+        ext._handle_workflow_run(
+            objective="status list demo",
+            workflow_id="wf-status-demo",
+            steps_json='[{"id":"s1","title":"only","action":"noop"}]',
+            execution_mode="execute",
+            policy_profile="dev",
+        )
+    )
+    assert run["run_status"] == "completed"
+
+    status = json.loads(ext._handle_workflow_status("wf-status-demo"))
+    assert status["ok"] is True
+    wf = status["workflow"]
+    assert wf["workflow_id"] == "wf-status-demo"
+    assert wf["status"] == "completed"
+    assert wf["outcome_count"] >= 1
+    assert "s1" in wf["latest_by_step"]
+
+    listed = json.loads(ext._handle_workflow_list(limit=5))
+    assert listed["ok"] is True
+    assert listed["count"] >= 1
+    assert any(x["workflow_id"] == "wf-status-demo" for x in listed["workflows"])
+
+
+def test_web_rank_normalizes_and_prioritizes_trusted_sources(tmp_path):
+    ext = AssistantExtension()
+    ext.on_load(_ctx_with_workspace(str(tmp_path)))
+
+    result = json.loads(
+        ext._handle_web_rank(
+            query="python packaging best practices",
+            results_json=(
+                '[{"title":"Unknown","url":"https://unknown.example.com/path?utm_source=x","snippet":"packaging guide"},'
+                '{"title":"PyPA","url":"https://packaging.python.org/en/latest/?ref=abc","snippet":"official docs"}]'
+            ),
+            max_results=5,
+        )
+    )
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert result["results"][0]["domain"] == "packaging.python.org"
+    assert result["results"][0]["url"] == "https://packaging.python.org/en/latest/"
+    assert result["results"][0]["trust_tier"] == "high"

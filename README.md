@@ -34,6 +34,14 @@ After loading the extension, these tools are available:
 - `assistant_plan_validate`
 - `assistant_workflow_run`
 - `assistant_meeting_prep`
+- `assistant_web_rank`
+- `assistant_workflow_status`
+- `assistant_workflow_list`
+- `assistant_memory_add`
+- `assistant_memory_search`
+- `assistant_skill_manage`
+- `assistant_checkpoint_create`
+- `assistant_insights`
 
 Slash commands:
 

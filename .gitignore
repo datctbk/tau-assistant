@@ -40,3 +40,10 @@ __pycache__/skill_manager.cpython-314.pyc
 tests/__pycache__/test_phase_b_scaffolds.cpython-39.pyc
 tests/__pycache__/test_skill_manager.cpython-39.pyc
 tests/__pycache__/test_skill_manager.cpython-314-pytest-9.0.3.pyc
+__pycache__/web_source_ranker.cpython-314.pyc
+__pycache__/workflow_executor.cpython-314.pyc
+tests/__pycache__/test_context_compressor.cpython-39-pytest-8.4.2.pyc
+tests/__pycache__/test_eval_harness.cpython-314-pytest-9.0.3.pyc
+tests/__pycache__/test_skill_manager.cpython-39-pytest-8.4.2.pyc
+tests/__pycache__/test_web_source_ranker.cpython-314-pytest-9.0.3.pyc
+__pycache__/workflow_policy.cpython-314.pyc

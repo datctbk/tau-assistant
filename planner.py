@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -8,6 +9,12 @@ class PlanStep:
     id: str
     title: str
     depends_on: list[str] = field(default_factory=list)
+    action: str = "noop"
+    connector: str = ""
+    connector_action: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+    retries: int = 0
+    on_failure: str = "stop"  # stop | continue
 
 
 @dataclass

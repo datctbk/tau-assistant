@@ -34,6 +34,9 @@ from memory_manager import MemoryManager
 from planner import PlanStep, WorkflowPlan
 from profile import UserProfile
 from skill_manager import SkillManager
+from web_source_ranker import normalize_and_rank_sources
+from workflow_executor import WorkflowExecutor
+from workflow_policy import WorkflowPolicyEnforcer
 from workflow_runner import (
     WorkflowRunner,
     append_assistant_event,
@@ -173,8 +176,24 @@ class AssistantExtension(Extension):
                     ),
                     "execution_mode": ToolParameter(
                         type="string",
-                        description="dry_run or enqueue_prompts.",
-                        enum=["dry_run", "enqueue_prompts"],
+                        description="dry_run, enqueue_prompts, or execute.",
+                        enum=["dry_run", "enqueue_prompts", "execute"],
+                        required=False,
+                    ),
+                    "resume": ToolParameter(
+                        type="boolean",
+                        description="Resume from saved workflow state if available.",
+                        required=False,
+                    ),
+                    "policy_profile": ToolParameter(
+                        type="string",
+                        description="Policy profile for real execution: dev, balanced, strict.",
+                        enum=["dev", "balanced", "strict"],
+                        required=False,
+                    ),
+                    "approved_risky_actions": ToolParameter(
+                        type="boolean",
+                        description="Explicit approval gate for medium/high risk actions under balanced/strict policy.",
                         required=False,
                     ),
                     "promote_to_skill": ToolParameter(
@@ -218,6 +237,54 @@ class AssistantExtension(Extension):
                     ),
                 },
                 handler=self._handle_meeting_prep,
+            ),
+            ToolDefinition(
+                name="assistant_web_rank",
+                description=(
+                    "Normalize web result URLs, add source trust fields, and rank by trust + query relevance."
+                ),
+                parameters={
+                    "query": ToolParameter(
+                        type="string",
+                        description="Original search query text for relevance scoring.",
+                    ),
+                    "results_json": ToolParameter(
+                        type="string",
+                        description=(
+                            "JSON array of web results, each item like "
+                            '{"title":"...","url":"...","snippet":"..."}'
+                        ),
+                    ),
+                    "max_results": ToolParameter(
+                        type="integer",
+                        description="Optional maximum returned rows (default 10).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_web_rank,
+            ),
+            ToolDefinition(
+                name="assistant_workflow_status",
+                description="Read persisted workflow execution state and failure summary.",
+                parameters={
+                    "workflow_id": ToolParameter(
+                        type="string",
+                        description="Workflow id to inspect.",
+                    ),
+                },
+                handler=self._handle_workflow_status,
+            ),
+            ToolDefinition(
+                name="assistant_workflow_list",
+                description="List saved workflow states ordered by most recently updated.",
+                parameters={
+                    "limit": ToolParameter(
+                        type="integer",
+                        description="Optional maximum number of states to return (default 20).",
+                        required=False,
+                    ),
+                },
+                handler=self._handle_workflow_list,
             ),
             ToolDefinition(
                 name="assistant_memory_add",
@@ -386,6 +453,9 @@ class AssistantExtension(Extension):
             "- assistant_plan_validate\n"
             "- assistant_workflow_run\n"
             "- assistant_meeting_prep\n"
+            "- assistant_web_rank\n"
+            "- assistant_workflow_status\n"
+            "- assistant_workflow_list\n"
             "- assistant_memory_add\n"
             "- assistant_memory_search\n"
             "- assistant_skill_manage\n"
@@ -402,17 +472,37 @@ class AssistantExtension(Extension):
             step_id = str(row.get("id", "")).strip()
             title = str(row.get("title", "")).strip()
             depends_on = row.get("depends_on", [])
+            action = str(row.get("action", "noop")).strip() or "noop"
+            connector = str(row.get("connector", "")).strip()
+            connector_action = str(row.get("connector_action", "")).strip()
+            payload = row.get("payload", {})
+            retries = row.get("retries", 0)
+            on_failure = str(row.get("on_failure", "stop")).strip().lower() or "stop"
             if not step_id:
                 raise ValueError(f"steps_json[{idx}].id is required.")
             if not title:
                 raise ValueError(f"steps_json[{idx}].title is required.")
             if not isinstance(depends_on, list):
                 raise ValueError(f"steps_json[{idx}].depends_on must be a list.")
+            if not isinstance(payload, dict):
+                raise ValueError(f"steps_json[{idx}].payload must be an object.")
+            if on_failure not in {"stop", "continue"}:
+                raise ValueError(f"steps_json[{idx}].on_failure must be 'stop' or 'continue'.")
+            try:
+                retries_val = max(0, int(retries))
+            except Exception as exc:
+                raise ValueError(f"steps_json[{idx}].retries must be an integer >= 0.") from exc
             steps.append(
                 PlanStep(
                     id=step_id,
                     title=title,
                     depends_on=[str(x) for x in depends_on],
+                    action=action,
+                    connector=connector,
+                    connector_action=connector_action,
+                    payload={str(k): v for k, v in payload.items()},
+                    retries=retries_val,
+                    on_failure=on_failure,
                 )
             )
         wf_id = workflow_id or f"wf-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
@@ -473,12 +563,18 @@ class AssistantExtension(Extension):
         steps_json: str,
         workflow_id: str | None = None,
         execution_mode: str = "dry_run",
+        resume: bool = False,
+        policy_profile: str = "balanced",
+        approved_risky_actions: bool = False,
         promote_to_skill: bool = False,
         skill_name: str = "",
     ) -> str:
         mode = (execution_mode or "dry_run").strip()
-        if mode not in {"dry_run", "enqueue_prompts"}:
-            return "Error: execution_mode must be one of: dry_run, enqueue_prompts."
+        if mode not in {"dry_run", "enqueue_prompts", "execute"}:
+            return "Error: execution_mode must be one of: dry_run, enqueue_prompts, execute."
+        policy = (policy_profile or "balanced").strip().lower()
+        if policy not in {"dev", "balanced", "strict"}:
+            return "Error: policy_profile must be one of: dev, balanced, strict."
 
         plan = self._build_plan(objective=objective, steps_json=steps_json, workflow_id=workflow_id)
         runner = WorkflowRunner(self._workspace_root)
@@ -491,18 +587,34 @@ class AssistantExtension(Extension):
             memory_snapshot=memory_snapshot,
         )
 
-        def _execute_step(step_id: str) -> str:
-            if mode == "enqueue_prompts" and self._ext_context is not None:
-                self._ext_context.enqueue(
-                    (
-                        f"[assistant workflow {plan.id}] Execute step {step_id} for objective "
-                        f"'{plan.objective}'.\n\n{execution_brief}"
-                    )
-                )
-                return f"enqueued prompt for step {step_id}"
-            return f"dry run completed step {step_id}"
+        calendar = CalendarConnector()
+        notes = NoteConnector()
+        chat = ChatConnector()
+        email = EmailConnector()
+        router = ConnectorRouter()
+        router.register(calendar)
+        router.register(notes)
+        router.register(chat)
+        router.register(email)
 
-        outcomes = runner.run(plan, execute_step=_execute_step)
+        executor = WorkflowExecutor(
+            workspace_root=self._workspace_root,
+            memory=self._memory,
+            router=router,
+            ext_context=self._ext_context,
+        )
+        enforcer = WorkflowPolicyEnforcer(
+            profile=policy,
+            approved_risky_actions=approved_risky_actions,
+        )
+
+        def _execute_step(step: PlanStep) -> str:
+            if mode == "execute":
+                enforcer.enforce(step)
+            return executor.execute_step(step, mode=mode, execution_brief=execution_brief)
+
+        run_result = runner.run_with_recovery(plan, execute_step=_execute_step, resume=bool(resume))
+        outcomes = [x for x in run_result.get("outcomes", []) if isinstance(x, dict)]
         handoff = self._context_engine.build_workflow_handoff(
             objective=objective,
             plan=plan,
@@ -559,6 +671,9 @@ class AssistantExtension(Extension):
                 "workflow_id": plan.id,
                 "objective": plan.objective,
                 "execution_mode": mode,
+                "run_status": run_result.get("status", "unknown"),
+                "resume": bool(resume),
+                "state_path": run_result.get("state_path", ""),
                 "memory_context": memory_context,
                 "memory_snapshot": memory_snapshot,
                 "execution_brief": execution_brief,
@@ -596,6 +711,36 @@ class AssistantExtension(Extension):
             metadata=metadata,
         )
         return _json_dumps({"ok": True, "memory": written})
+
+    def _handle_workflow_status(self, workflow_id: str) -> str:
+        runner = WorkflowRunner(self._workspace_root)
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return "Error: workflow_id is required."
+        state = runner.get_state(wid)
+        return _json_dumps({"ok": True, "workflow": state})
+
+    def _handle_workflow_list(self, limit: int = 20) -> str:
+        runner = WorkflowRunner(self._workspace_root)
+        rows = runner.list_states(limit=limit)
+        return _json_dumps({"ok": True, "count": len(rows), "workflows": rows})
+
+    def _handle_web_rank(self, query: str, results_json: str, max_results: int = 10) -> str:
+        rows = _parse_json_array(results_json, field="results_json")
+        normalized = normalize_and_rank_sources(
+            query=str(query or ""),
+            items=[x for x in rows if isinstance(x, dict)],
+        )
+        cap = max(1, int(max_results or 10))
+        top = normalized[:cap]
+        return _json_dumps(
+            {
+                "ok": True,
+                "query": query,
+                "count": len(top),
+                "results": top,
+            }
+        )
 
     def _handle_memory_search(self, query: str, limit: int = 5) -> str:
         rows = self._memory.search_memories(query=query, limit=limit)

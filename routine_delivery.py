@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from connector_router import ConnectorRouter
@@ -51,7 +51,7 @@ class RoutineDeliveryRunner:
         raise ValueError(f"Unsupported delivery connector: {connector!r}")
 
     def deliver(self, routine: Routine) -> dict[str, Any]:
-        now = datetime.now(timezone.utc)
+        now = datetime.now().astimezone()
         connector = (routine.delivery_connector or "chat").strip().lower()
         action, payload = self._build_payload(routine, now=now)
         resp = self.router.route(connector, action, payload)
@@ -64,5 +64,6 @@ class RoutineDeliveryRunner:
             "action": action,
             "payload": payload,
             "delivered_at": now.isoformat(),
+            "timezone": str(now.tzinfo or ""),
             "response": resp.data,
         }

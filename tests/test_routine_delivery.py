@@ -28,6 +28,8 @@ def test_routine_delivery_chat():
     )
     assert rec["connector"] == "chat"
     assert rec["payload"]["channel"] == "team-ops"
+    assert rec["timezone"] != ""
+    assert "Run Daily Brief at " in rec["payload"]["text"]
 
 
 def test_routine_delivery_email_requires_target():

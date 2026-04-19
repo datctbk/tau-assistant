@@ -1222,6 +1222,28 @@ class AssistantExtension(Extension):
                 )
 
         path = engine.save_workspace(self._workspace_root)
+        delivery_summaries = []
+        for rec in deliveries:
+            payload = rec.get("payload", {}) if isinstance(rec, dict) else {}
+            text = str(payload.get("text", "") if isinstance(payload, dict) else "")
+            body = str(payload.get("body", "") if isinstance(payload, dict) else "")
+            preview = (text or body).strip()
+            if len(preview) > 220:
+                preview = preview[:217].rstrip() + "..."
+            delivery_summaries.append(
+                {
+                    "routine_id": str(rec.get("routine_id", "")),
+                    "connector": str(rec.get("connector", "")),
+                    "target": str(
+                        (payload.get("channel") if isinstance(payload, dict) else "")
+                        or (payload.get("to") if isinstance(payload, dict) else "")
+                        or (payload.get("id") if isinstance(payload, dict) else "")
+                    ),
+                    "delivered_at": str(rec.get("delivered_at", "")),
+                    "timezone": str(rec.get("timezone", "")),
+                    "preview": preview,
+                }
+            )
         return _json_dumps(
             {
                 "ok": True,
@@ -1230,6 +1252,7 @@ class AssistantExtension(Extension):
                 "delivered_count": len(deliveries),
                 "failed_count": len(failures),
                 "deliveries": deliveries,
+                "delivery_summaries": delivery_summaries,
                 "failures": failures,
                 "path": path,
             }

@@ -591,6 +591,9 @@ def test_routine_manage_and_run_due_delivery(tmp_path):
     assert ran["failed_count"] == 0
     assert ran["deliveries"][0]["connector"] == "chat"
     assert ran["deliveries"][0]["payload"]["channel"] == "team-ops"
+    assert ran["delivery_summaries"][0]["routine_id"] == "r1"
+    assert ran["delivery_summaries"][0]["target"] == "team-ops"
+    assert ran["delivery_summaries"][0]["timezone"] != ""
 
     listed = json.loads(ext._handle_routine_manage(action="list"))
     assert listed["ok"] is True

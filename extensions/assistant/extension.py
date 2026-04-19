@@ -212,8 +212,12 @@ class AssistantExtension(Extension):
                     "steps_json": ToolParameter(
                         type="string",
                         description=(
-                            "JSON array of steps. "
-                            'Each step: {"id":"s1","title":"...","depends_on":["s0"]}.'
+                            "JSON array of step objects. "
+                            "Supported fields per step: id (required), title (required), "
+                            "depends_on (list), action (noop|run_bash|connector_action|memory_add), "
+                            "connector, connector_action, payload (object), retries (int>=0), "
+                            "on_failure (stop|continue). "
+                            "Note: 'actions' (plural) is not supported."
                         ),
                     ),
                 },
@@ -783,6 +787,11 @@ class AssistantExtension(Extension):
         for idx, row in enumerate(rows):
             if not isinstance(row, dict):
                 raise ValueError(f"steps_json[{idx}] must be an object.")
+            if "actions" in row:
+                raise ValueError(
+                    f"steps_json[{idx}].actions is not supported. "
+                    "Use action (singular) with optional connector/connector_action/payload fields."
+                )
             step_id = str(row.get("id", "")).strip()
             title = str(row.get("title", "")).strip()
             depends_on = row.get("depends_on", [])

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from profile import UserProfile
+from assistant_profile import UserProfile
 from planner import PlanStep, WorkflowPlan
 from routine_engine import Routine, RoutineEngine
 from workflow_runner import WorkflowRunner

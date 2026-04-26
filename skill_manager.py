@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from skills_guard import SkillGuard
+
 
 def _slugify(text: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", text.strip().lower()).strip("-")
@@ -118,11 +120,17 @@ class SkillManager:
         if not target.exists():
             raise ValueError(f"Skill not found: {name}")
         raw = target.read_text(encoding="utf-8")
+        
+        # Security scan
+        guard = SkillGuard.scan_markdown(raw)
+        
         return {
             "name": name.strip(),
             "slug": self._skill_dir(name).name,
             "path": str(target),
             "content": raw,
+            "is_safe": guard.is_safe,
+            "violations": guard.violations,
         }
 
     def delete(self, *, name: str) -> dict[str, Any]:

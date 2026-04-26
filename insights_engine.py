@@ -56,31 +56,45 @@ class AssistantInsightsEngine:
 
     def _audit_stats(self) -> dict[str, Any]:
         audit_path = self.root / ".tau" / "audit" / "assistant-actions.jsonl"
+        stats = {
+            "events_total": 0,
+            "workflow_steps_completed": 0,
+            "named_checkpoints": 0,
+            "tool_calls_total": 0,
+            "tool_errors_total": 0,
+            "policy_blocks": 0,
+            "policy_denials": 0,
+        }
         if not audit_path.exists():
-            return {"events_total": 0, "workflow_steps_completed": 0, "named_checkpoints": 0}
-        total = 0
-        step_completed = 0
-        named_checkpoints = 0
+            return stats
+
         with audit_path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                total += 1
+                stats["events_total"] += 1
                 try:
                     row = json.loads(line)
                 except Exception:
                     continue
                 et = str(row.get("event_type", ""))
+                payload = row.get("payload", {})
+
                 if et == "workflow.step_completed":
-                    step_completed += 1
-                if et == "assistant.checkpoint_created":
-                    named_checkpoints += 1
-        return {
-            "events_total": total,
-            "workflow_steps_completed": step_completed,
-            "named_checkpoints": named_checkpoints,
-        }
+                    stats["workflow_steps_completed"] += 1
+                elif et == "assistant.checkpoint_created":
+                    stats["named_checkpoints"] += 1
+                elif et == "tool.completed":
+                    stats["tool_calls_total"] += 1
+                    if payload.get("is_error"):
+                        stats["tool_errors_total"] += 1
+                elif et == "policy.blocked":
+                    stats["policy_blocks"] += 1
+                elif et == "policy.denied":
+                    stats["policy_denials"] += 1
+                    
+        return stats
 
     def generate(self) -> dict[str, Any]:
         checkpoints = self._checkpoint_files()
@@ -92,6 +106,10 @@ class AssistantInsightsEngine:
         named_cp = [x for x in checkpoints if "_named_" in x.name]
         workflow_step_cp = [x for x in checkpoints if x.suffix == ".json" and "_named_" not in x.name]
         handoff_cp = [x for x in checkpoints if x.name.endswith("_handoff.md")]
+        
+        tc_total = audit.get("tool_calls_total", 0)
+        tc_errors = audit.get("tool_errors_total", 0)
+        failure_rate = (tc_errors / tc_total * 100) if tc_total > 0 else 0.0
 
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -105,8 +123,15 @@ class AssistantInsightsEngine:
                 "routines_total": len(routines.routines),
                 "memory_topics_total": memory["topics_total"],
                 "memory_entries_estimated": memory["entries_estimated"],
-                "audit_events_total": audit["events_total"],
+            },
+            "audit_metrics": {
+                "events_total": audit["events_total"],
                 "workflow_steps_completed": audit["workflow_steps_completed"],
+                "tool_calls_total": tc_total,
+                "tool_errors_total": tc_errors,
+                "tool_failure_rate_percent": round(failure_rate, 2),
+                "policy_blocks": audit["policy_blocks"],
+                "policy_denials": audit["policy_denials"],
             },
             "recent": {
                 "checkpoints": [str(x) for x in checkpoints[:5]],

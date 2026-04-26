@@ -23,7 +23,9 @@ from tau.core.types import ExtensionManifest, SlashCommand, ToolDefinition, Tool
 # Make sibling tau-assistant modules importable whether run from source or installed package.
 _PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(_PKG_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PKG_ROOT))
+    # Keep project modules importable without shadowing stdlib modules
+    # such as `profile` used by cProfile/torch/transformers internals.
+    sys.path.append(str(_PKG_ROOT))
 
 from connector_router import ConnectorRouter
 from connectors import CalendarConnector, ChatConnector, EmailConnector, NoteConnector
@@ -34,7 +36,7 @@ from dialectic_profile import DialecticProfileManager
 from insights_engine import AssistantInsightsEngine
 from memory_manager import MemoryManager
 from planner import PlanStep, WorkflowPlan
-from profile import UserProfile
+from assistant_profile import UserProfile
 from routine_delivery import RoutineDeliveryRunner
 from routine_engine import Routine, RoutineEngine
 from session_recall import SessionRecallEngine

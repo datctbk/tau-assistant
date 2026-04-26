@@ -51,6 +51,8 @@ from workflow_runner import (
     append_audit_record,
     make_assistant_event,
 )
+from policy_profiles import DefaultPolicyProfileEvaluator
+from tau.core.policy import clear_policy_profile_evaluator, register_policy_profile_evaluator
 
 
 def _json_dumps(data: Any) -> str:
@@ -107,6 +109,12 @@ class AssistantExtension(Extension):
         self._checkpoints = CheckpointManager(self._workspace_root)
         self._insights = AssistantInsightsEngine(self._workspace_root)
         self._delegate_personas = load_tau_agents_personas()
+        # Install assistant-owned policy evaluator via core plugin hook.
+        register_policy_profile_evaluator(DefaultPolicyProfileEvaluator())
+
+    def on_unload(self) -> None:
+        # Avoid leaking assistant policy behavior after extension unload/reload.
+        clear_policy_profile_evaluator()
 
     def tools(self) -> list[ToolDefinition]:
         return [

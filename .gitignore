@@ -105,3 +105,5 @@ extensions/assistant/__pycache__/extension.cpython-310.pyc
 tests/__pycache__/test_extension.cpython-310-pytest-8.3.2.pyc
 tests/__pycache__/test_routine_delivery.cpython-310-pytest-8.3.2.pyc
 __pycache__/policy_profiles.cpython-311.pyc
+__pycache__/assistant_profile.cpython-310.pyc
+__pycache__/skills_guard.cpython-310.pyc

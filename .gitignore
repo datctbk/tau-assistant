@@ -107,3 +107,12 @@ tests/__pycache__/test_routine_delivery.cpython-310-pytest-8.3.2.pyc
 __pycache__/policy_profiles.cpython-311.pyc
 __pycache__/assistant_profile.cpython-310.pyc
 __pycache__/skills_guard.cpython-310.pyc
+__pycache__/connector_router.cpython-311.pyc
+__pycache__/connectors.cpython-311.pyc
+__pycache__/cross_connector_routines.cpython-311.pyc
+__pycache__/planner.cpython-311.pyc
+__pycache__/routine_engine.cpython-311.pyc
+__pycache__/workflow_runner.cpython-311.pyc
+__pycache__/subagent_delegate.cpython-311.pyc
+extensions/assistant/__pycache__/extension.cpython-311.pyc
+tests/__pycache__/test_extension.cpython-311-pytest-9.0.3.pyc

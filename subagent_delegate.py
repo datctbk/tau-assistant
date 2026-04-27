@@ -58,10 +58,33 @@ def _parse_frontmatter(raw: str) -> tuple[dict[str, Any], str]:
     return obj, body
 
 
-def load_tau_agents_personas() -> dict[str, DelegatePersona]:
+def _candidate_persona_dirs(workspace_root: str | Path | None = None) -> list[Path]:
+    here = Path(__file__).resolve()
+    dirs: list[Path] = [
+        # Monorepo layout when tau-assistant and tau-agents are siblings.
+        here.parents[1] / "tau-agents" / "skills" / "built-in-agents",
+        # Fallback when extension is installed elsewhere but tau-agents exists in cwd.
+        Path.cwd() / "tau-agents" / "skills" / "built-in-agents",
+    ]
+    if workspace_root:
+        ws = Path(workspace_root).resolve()
+        dirs.append(ws / "tau-agents" / "skills" / "built-in-agents")
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for p in dirs:
+        key = p.resolve(strict=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    return unique
+
+
+def load_tau_agents_personas(workspace_root: str | Path | None = None) -> dict[str, DelegatePersona]:
     personas: dict[str, DelegatePersona] = {}
-    skills_dir = Path(__file__).resolve().parents[1] / "tau-agents" / "skills" / "built-in-agents"
-    if not skills_dir.exists():
+    skills_dir = next((p for p in _candidate_persona_dirs(workspace_root) if p.exists()), None)
+    if skills_dir is None:
         return personas
     for md_file in sorted(skills_dir.glob("*.md")):
         raw = md_file.read_text(encoding="utf-8").strip()

@@ -96,7 +96,7 @@ class AssistantExtension(Extension):
         self._checkpoints = CheckpointManager(self._workspace_root)
         self._insights = AssistantInsightsEngine(self._workspace_root)
         self._context_engine = WorkflowContextCompressor()
-        self._delegate_personas = load_tau_agents_personas()
+        self._delegate_personas = load_tau_agents_personas(self._workspace_root)
 
     def on_load(self, context: ExtensionContext) -> None:
         self._ext_context = context
@@ -108,7 +108,7 @@ class AssistantExtension(Extension):
         self._skills = SkillManager(self._workspace_root)
         self._checkpoints = CheckpointManager(self._workspace_root)
         self._insights = AssistantInsightsEngine(self._workspace_root)
-        self._delegate_personas = load_tau_agents_personas()
+        self._delegate_personas = load_tau_agents_personas(self._workspace_root)
         # Install assistant-owned policy evaluator via core plugin hook.
         register_policy_profile_evaluator(DefaultPolicyProfileEvaluator())
 

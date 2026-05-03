@@ -51,11 +51,20 @@ After loading the extension, these tools are available:
 - `assistant_skill_manage`
 - `assistant_checkpoint_create`
 - `assistant_insights`
+- `assistant_reset_state`
 
 Slash commands:
 
 - `/assistant`
 - `/assistant-profile`
+
+## What It Adds
+
+- Assistant profile + dialectic profile management
+- Workflow execution and status tracking
+- Parallel sub-agent orchestration helpers
+- Session recall/memory helpers for assistant flows
+- Routine scheduling hooks for recurring work
 
 ## Optional Standalone CLI
 

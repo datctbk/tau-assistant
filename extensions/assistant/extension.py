@@ -10,6 +10,7 @@ Adds a personal-assistant layer as an extension (not tau core):
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -97,6 +98,10 @@ class AssistantExtension(Extension):
         self._insights = AssistantInsightsEngine(self._workspace_root)
         self._context_engine = WorkflowContextCompressor()
         self._delegate_personas = load_tau_agents_personas(self._workspace_root)
+        self._routine_engine: RoutineEngine | None = None
+        self._routine_runner: RoutineDeliveryRunner | None = None
+        self._heartbeat_enabled = False
+        self._heartbeat_limit = 20
 
     def on_load(self, context: ExtensionContext) -> None:
         self._ext_context = context
@@ -111,9 +116,41 @@ class AssistantExtension(Extension):
         self._delegate_personas = load_tau_agents_personas(self._workspace_root)
         # Install assistant-owned policy evaluator via core plugin hook.
         register_policy_profile_evaluator(DefaultPolicyProfileEvaluator())
+        # Optional heartbeat loop for due routines (minimal/opt-in).
+        self._heartbeat_enabled = os.environ.get("TAU_ASSISTANT_HEARTBEAT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        try:
+            self._heartbeat_limit = max(1, int(os.environ.get("TAU_ASSISTANT_HEARTBEAT_LIMIT", "20") or 20))
+        except Exception:
+            self._heartbeat_limit = 20
+        if self._heartbeat_enabled:
+            try:
+                poll = float(os.environ.get("TAU_ASSISTANT_HEARTBEAT_POLL_SECONDS", "30") or 30)
+                poll = max(5.0, poll)
+            except Exception:
+                poll = 30.0
+            self._routine_engine = RoutineEngine.load_workspace(self._workspace_root)
+            self._routine_runner = RoutineDeliveryRunner(self._build_connector_router())
+
+            def _on_due(_: Routine) -> None:
+                # Use shared execution path; routine id arg is ignored because we cap/scan due each tick.
+                self._run_due_routines(limit=self._heartbeat_limit)
+
+            self._routine_engine.start_scheduler(on_due=_on_due, poll_interval_seconds=poll)
 
     def on_unload(self) -> None:
         # Avoid leaking assistant policy behavior after extension unload/reload.
+        try:
+            if self._routine_engine is not None:
+                self._routine_engine.stop_scheduler()
+        except Exception:
+            pass
+        self._routine_engine = None
+        self._routine_runner = None
         clear_policy_profile_evaluator()
 
     def tools(self) -> list[ToolDefinition]:
@@ -1190,11 +1227,14 @@ class AssistantExtension(Extension):
         return "Error: action must be one of create, list, delete, enable, disable."
 
     def _handle_routine_run_due(self, limit: int = 20) -> str:
+        return _json_dumps(self._run_due_routines(limit=limit))
+
+    def _run_due_routines(self, limit: int = 20) -> dict[str, Any]:
         engine = RoutineEngine.load_workspace(self._workspace_root)
         due = engine.due_routines()
         cap = max(1, int(limit or 20))
         selected = due[:cap]
-        runner = RoutineDeliveryRunner(self._build_connector_router())
+        runner = self._routine_runner or RoutineDeliveryRunner(self._build_connector_router())
 
         deliveries: list[dict[str, Any]] = []
         failures: list[dict[str, str]] = []
@@ -1263,19 +1303,18 @@ class AssistantExtension(Extension):
                     "preview": preview,
                 }
             )
-        return _json_dumps(
-            {
-                "ok": True,
-                "due_count": len(due),
-                "run_count": len(selected),
-                "delivered_count": len(deliveries),
-                "failed_count": len(failures),
-                "deliveries": deliveries,
-                "delivery_summaries": delivery_summaries,
-                "failures": failures,
-                "path": path,
-            }
-        )
+        return {
+            "ok": True,
+            "due_count": len(due),
+            "run_count": len(selected),
+            "delivered_count": len(deliveries),
+            "failed_count": len(failures),
+            "deliveries": deliveries,
+            "delivery_summaries": delivery_summaries,
+            "failures": failures,
+            "path": path,
+            "heartbeat_enabled": self._heartbeat_enabled,
+        }
 
     def _handle_subagent_run(
         self,

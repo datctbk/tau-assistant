@@ -103,6 +103,21 @@ class AssistantExtension(Extension):
         self._heartbeat_enabled = False
         self._heartbeat_limit = 20
 
+    def _heartbeat_state_path(self) -> Path:
+        return Path(self._workspace_root) / ".tau" / "assistant" / "heartbeat_state.json"
+
+    def _write_heartbeat_state(self, *, active: bool, last_tick: str | None = None) -> None:
+        try:
+            p = self._heartbeat_state_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "active": bool(active),
+                "last_tick": last_tick or datetime.now(timezone.utc).isoformat(),
+            }
+            p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
     def on_load(self, context: ExtensionContext) -> None:
         self._ext_context = context
         agent_cfg = getattr(context, "_agent_config", None)
@@ -141,6 +156,9 @@ class AssistantExtension(Extension):
                 self._run_due_routines(limit=self._heartbeat_limit)
 
             self._routine_engine.start_scheduler(on_due=_on_due, poll_interval_seconds=poll)
+            self._write_heartbeat_state(active=True)
+        else:
+            self._write_heartbeat_state(active=False)
 
     def on_unload(self) -> None:
         # Avoid leaking assistant policy behavior after extension unload/reload.
@@ -151,6 +169,7 @@ class AssistantExtension(Extension):
             pass
         self._routine_engine = None
         self._routine_runner = None
+        self._write_heartbeat_state(active=False)
         clear_policy_profile_evaluator()
 
     def tools(self) -> list[ToolDefinition]:
@@ -1231,6 +1250,7 @@ class AssistantExtension(Extension):
 
     def _run_due_routines(self, limit: int = 20) -> dict[str, Any]:
         engine = RoutineEngine.load_workspace(self._workspace_root)
+        self._write_heartbeat_state(active=self._heartbeat_enabled)
         due = engine.due_routines()
         cap = max(1, int(limit or 20))
         selected = due[:cap]

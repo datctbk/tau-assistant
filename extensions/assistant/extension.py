@@ -805,15 +805,60 @@ class AssistantExtension(Extension):
                 description="Show the assistant profile.",
                 usage="/assistant-profile",
             ),
+            SlashCommand(
+                name="skills",
+                description="List assistant skills.",
+                usage="/skills",
+            ),
+            SlashCommand(
+                name="skill-read",
+                description="Read one assistant skill by name.",
+                usage="/skill-read <skill name>",
+            ),
+            SlashCommand(
+                name="workflow-list",
+                description="List workflow states.",
+                usage="/workflow-list [limit]",
+            ),
+            SlashCommand(
+                name="workflow-status",
+                description="Show one workflow state by id.",
+                usage="/workflow-status <workflow_id>",
+            ),
         ]
 
     def handle_slash(self, command: str, args: str, context: ExtensionContext) -> bool:
-        del args
         if command == "assistant":
             context.print(self._status_text())
             return True
         if command == "assistant-profile":
             context.print(self._handle_profile_get())
+            return True
+        if command == "skills":
+            context.print(self._handle_skill_manage(action="list"))
+            return True
+        if command == "skill-read":
+            name = (args or "").strip()
+            if not name:
+                context.print("Usage: /skill-read <skill name>")
+                return True
+            context.print(self._handle_skill_manage(action="read", name=name))
+            return True
+        if command == "workflow-list":
+            limit_raw = (args or "").strip()
+            try:
+                limit = int(limit_raw) if limit_raw else 20
+            except Exception:
+                context.print("Usage: /workflow-list [limit]")
+                return True
+            context.print(self._handle_workflow_list(limit=limit))
+            return True
+        if command == "workflow-status":
+            workflow_id = (args or "").strip()
+            if not workflow_id:
+                context.print("Usage: /workflow-status <workflow_id>")
+                return True
+            context.print(self._handle_workflow_status(workflow_id=workflow_id))
             return True
         return False
 

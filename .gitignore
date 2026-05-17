@@ -116,11 +116,9 @@ __pycache__/workflow_runner.cpython-311.pyc
 __pycache__/subagent_delegate.cpython-311.pyc
 extensions/assistant/__pycache__/extension.cpython-311.pyc
 tests/__pycache__/test_extension.cpython-311-pytest-9.0.3.pyc
-<<<<<<< HEAD
 cron/__pycache__/__init__.cpython-312.pyc
 __pycache__/skills_guard.cpython-312.pyc
 cron/__pycache__/jobs.cpython-312.pyc
 cron/__pycache__/scheduler.cpython-312.pyc
-=======
 __pycache__/routine_delivery.cpython-39.pyc
->>>>>>> afc0366 (abc)
+tests/__pycache__/test_extension.cpython-312.pyc

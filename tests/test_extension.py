@@ -84,6 +84,62 @@ def test_tools_exist():
     }
 
 
+def test_slash_commands_exposed():
+    ext = AssistantExtension()
+    names = {c.name for c in ext.slash_commands()}
+    assert {"assistant", "assistant-profile", "skills", "skill-read", "workflow-list", "workflow-status"} <= names
+
+
+def test_slash_skills_and_workflow_commands(tmp_path):
+    ext = AssistantExtension()
+    ctx = _ctx_with_workspace(str(tmp_path))
+    ext.on_load(ctx)
+
+    # Seed one skill.
+    ext._handle_skill_manage(
+        action="create",
+        name="Release Workflow",
+        description="Release process",
+        instructions="Step 1: build\nStep 2: test",
+    )
+
+    assert ext.handle_slash("skills", "", ctx) is True
+    out = str(ctx.print.call_args[0][0])
+    parsed = json.loads(out)
+    assert parsed["ok"] is True
+    assert parsed["action"] == "list"
+    assert parsed["count"] >= 1
+
+    ctx.print.reset_mock()
+    assert ext.handle_slash("skill-read", "Release Workflow", ctx) is True
+    out = str(ctx.print.call_args[0][0])
+    parsed = json.loads(out)
+    assert parsed["ok"] is True
+    assert parsed["action"] == "read"
+    assert parsed["skill"]["name"] == "Release Workflow"
+
+    # Seed one workflow state.
+    ext._handle_workflow_run(
+        objective="status demo",
+        steps_json='[{"id":"s1","title":"draft"}]',
+        workflow_id="wf-status-slash",
+        execution_mode="dry_run",
+    )
+
+    ctx.print.reset_mock()
+    assert ext.handle_slash("workflow-list", "5", ctx) is True
+    out = str(ctx.print.call_args[0][0])
+    parsed = json.loads(out)
+    assert parsed["ok"] is True
+    assert parsed["count"] >= 1
+
+    ctx.print.reset_mock()
+    assert ext.handle_slash("workflow-status", "wf-status-slash", ctx) is True
+    out = str(ctx.print.call_args[0][0])
+    parsed = json.loads(out)
+    assert parsed["ok"] is True
+    assert parsed["workflow"]["workflow_id"] == "wf-status-slash"
+
 def test_profile_roundtrip(tmp_path):
     ext = AssistantExtension()
     ext.on_load(_ctx_with_workspace(str(tmp_path)))

@@ -57,6 +57,10 @@ Slash commands:
 
 - `/assistant`
 - `/assistant-profile`
+- `/skills`
+- `/skill-read <skill name>`
+- `/workflow-list [limit]`
+- `/workflow-status <workflow_id>`
 
 ## What It Adds
 

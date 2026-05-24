@@ -1106,9 +1106,15 @@ class AssistantExtension(Extension):
             router=router,
             ext_context=self._ext_context,
         )
+        agent_approved = False
+        if self._ext_context is not None and getattr(self._ext_context, "_agent_config", None) is not None:
+            val = getattr(self._ext_context._agent_config, "approved_risky_actions", False)
+            if isinstance(val, bool):
+                agent_approved = val
+
         enforcer = WorkflowPolicyEnforcer(
             profile=policy,
-            approved_risky_actions=approved_risky_actions,
+            approved_risky_actions=approved_risky_actions or agent_approved,
         )
 
         def _execute_step(step: PlanStep) -> str:

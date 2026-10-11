@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 from tau.core.policy import PolicyDecision
 from tau.core.types import ToolCall
+
+
+def _should_confirm_codegraph() -> bool:
+    """Check if codegraph tools require user confirmation.
+
+    If False: auto-allowed (low risk, no confirmation prompt).
+    If True: requires confirmation (medium risk, asks allow? [y/N]).
+    """
+    raw = os.getenv("TAU_CONFIRM_CODEGRAPH")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    try:
+        import tomllib
+        cfg_file = Path.home() / ".tau" / "config.toml"
+        if cfg_file.is_file():
+            with open(cfg_file, "rb") as f:
+                data = tomllib.load(f)
+            for sec in ("policy", "tools", "codegraph", "defaults"):
+                if sec in data and "confirm_codegraph" in data[sec]:
+                    return bool(data[sec]["confirm_codegraph"])
+    except Exception:
+        pass
+
+    return False
 
 
 class DefaultPolicyProfileEvaluator:
@@ -32,6 +59,8 @@ class DefaultPolicyProfileEvaluator:
 
     def _classify_risk(self, call: ToolCall) -> str:
         name = call.name
+        if name.startswith("codegraph_"):
+            return "medium" if _should_confirm_codegraph() else "low"
         if name in {"read_file", "list_dir", "search_files", "grep", "find", "ls", "task_events"}:
             return "low"
         if name in {"write_file", "edit_file", "task_update", "task_stop", "task_create"}:
